@@ -1,0 +1,39 @@
+# SASRec Configuration
+# Paper: Self-Attentive Sequential Recommendation (ICDM 2018)
+
+seed: 42
+device: cuda
+use_amp: true
+experiment_name: sasrec
+
+data:
+  dataset: ml-1m
+  data_dir: data
+  max_seq_len: 50
+  train_batch_size: 128
+  eval_batch_size: 256
+  num_workers: 4
+
+model:
+  model_name: sasrec
+  hidden_size: 50
+  num_layers: 2
+  num_heads: 1
+  dropout_rate: 0.2
+
+training:
+  epochs: 200
+  learning_rate: 0.001
+  weight_decay: 0.0
+  optimizer: adam
+  scheduler: none
+  gradient_clip: 1.0
+  
+  loss_type: bce
+  num_negatives: 1
+  
+  eval_interval: 20
+  early_stopping_patience: 20
+  
+  save_dir: experiments/checkpoints/sasrec
+  log_dir: experiments/logs/sasrec

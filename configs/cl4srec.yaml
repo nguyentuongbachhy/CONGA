@@ -1,0 +1,53 @@
+# CL4SRec Configuration
+# Paper: Contrastive Learning for Sequential Recommendation (SIGIR 2021)
+
+seed: 42
+device: cuda
+use_amp: true
+experiment_name: cl4srec
+
+data:
+  dataset: ml-1m
+  data_dir: data
+  max_seq_len: 50
+  train_batch_size: 256
+  eval_batch_size: 256
+  num_workers: 4
+
+model:
+  model_name: cl4srec
+  hidden_size: 64
+  num_layers: 2
+  num_heads: 1
+  dropout_rate: 0.2
+  
+  # Contrastive learning settings
+  use_contrastive: true
+  contrastive_weight: 0.1
+  temperature: 1.0
+  augmentation_types:
+    - crop
+    - mask
+    - reorder
+  
+  # Augmentation ratios
+  crop_ratio: 0.6
+  mask_ratio: 0.3
+  reorder_ratio: 0.6
+
+training:
+  epochs: 200
+  learning_rate: 0.001
+  weight_decay: 0.0
+  optimizer: adam
+  scheduler: none
+  gradient_clip: 1.0
+  
+  loss_type: bce
+  num_negatives: 1
+  
+  eval_interval: 20
+  early_stopping_patience: 20
+  
+  save_dir: experiments/checkpoints/cl4srec
+  log_dir: experiments/logs/cl4srec
