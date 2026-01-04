@@ -91,6 +91,11 @@ def main():
         name="train",
         log_dir=config.training.log_dir,
     )
+
+    if str(config.device).startswith("cuda") and not torch.cuda.is_available():
+        logger.warning("CUDA was requested but is not available in this PyTorch build. Switching device to CPU and disabling AMP.")
+        config.device = "cpu"
+        config.use_amp = False
     
     logger.info(f"Config: {config.to_dict()}")
     

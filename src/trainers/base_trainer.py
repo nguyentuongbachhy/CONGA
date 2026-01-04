@@ -55,7 +55,10 @@ class BaseTrainer:
         self.scheduler = scheduler
         
         # Device
-        self.device = config.device if hasattr(config, 'device') else 'cuda'
+        requested_device = config.device if hasattr(config, 'device') else 'cuda'
+        if str(requested_device).startswith("cuda") and not torch.cuda.is_available():
+            requested_device = "cpu"
+        self.device = requested_device
         self.model = self.model.to(self.device)
         
         # AMP
@@ -64,12 +67,19 @@ class BaseTrainer:
         if str(self.device).startswith("cpu"):
             self.use_amp = False
         self.scaler = GradScaler() if self.use_amp else None
+        if str(config.device if hasattr(config, 'device') else 'cuda').startswith("cuda") and str(self.device).startswith("cpu"):
+            self.logger = setup_logger(
+                name="trainer",
+                log_dir=config.training.log_dir if hasattr(config, 'training') else "experiments/logs",
+            )
+            self.logger.warning("CUDA was requested but is not available. Falling back to CPU and disabling AMP.")
         
         # Logging
-        self.logger = setup_logger(
-            name="trainer",
-            log_dir=config.training.log_dir if hasattr(config, 'training') else "experiments/logs",
-        )
+        if not hasattr(self, "logger"):
+            self.logger = setup_logger(
+                name="trainer",
+                log_dir=config.training.log_dir if hasattr(config, 'training') else "experiments/logs",
+            )
         
         self.tb_logger = TensorBoardLogger(
             log_dir=config.training.log_dir if hasattr(config, 'training') else "experiments/logs",

@@ -72,14 +72,18 @@ venv.bak/
 # IDE
 .idea/
 .vscode/
-*.swp
-*.swo
-*~
 
 # Project specific
 data/raw/
-data/*.txt
-experiments/checkpoints/
+data/
+
+# Experiments
+experiments/
+
+# Research artifacts (Option A: keep untracked)
+notebooks/
+papers/
+checkpoints/
 experiments/logs/
 experiments/results/
 *.pth
