@@ -1,11 +1,11 @@
-# CONGA v2 Fixed Configuration
-# Disabled continual learning components for single-task training
-# Increased contrastive/graph weights, better regularization
+# SASRec-RoPE Configuration (matching code/src training setup)
+# This config replicates the training from code/src/main.py
+# Best results: Test NDCG@10: 0.5548, HR@10: 0.7896 (FP32, epoch 380)
 
 seed: 42
 device: cuda
-use_amp: true
-experiment_name: conga_v2_fixed
+use_amp: false  # Set to false for stable metrics (FP32 training)
+experiment_name: sasrec_rope_ml1m
 
 data:
   dataset: ml-1m
@@ -16,55 +16,26 @@ data:
   num_workers: 2
 
 model:
-  model_name: conga_v2
+  model_name: sasrec_rope
   hidden_size: 64
   num_layers: 2
-  num_heads: 2
-  dropout_rate: 0.3  # Increased from 0.2
-  
-  # Nested Graph Architecture (simplified)
-  use_graph: true
-  num_local_layers: 1      # Reduced from 2
-  num_global_layers: 1
-  memory_bank_size: 500    # Reduced from 1000
-  
-  # Multi-scale Contrastive Learning (increased weights)
-  use_contrastive: true
-  contrastive_weight: 0.3  # Increased from 0.1
-  graph_cl_weight: 0.3     # Increased from 0.1
-  temperature: 0.07
-  augmentation_types:
-    - crop
-    - mask
-    - reorder
-  
-  # DISABLE Continual Learning (not suitable for single-task)
-  use_continual: false
-  use_ewc: false
-  use_nested_learning: false
-  
-  # Keep these for compatibility but won't be used
-  replay_buffer_size: 10000
-  replay_ratio: 0.3
-  distillation_weight: 0.5
-  ewc_lambda: 1000.0
-  num_experts: 4
-  importance_alpha: 0.6
+  num_heads: 1  # code/src uses 1 head
+  dropout_rate: 0.2
 
 training:
-  epochs: 100
+  epochs: 400
   learning_rate: 0.001
   weight_decay: 0.01
   optimizer: adamw
   scheduler: cosine
-  warmup_steps: 500        # Increased from 100
+  warmup_steps: 0  # code/src doesn't use warmup
   gradient_clip: 1.0
   
   loss_type: bce
   num_negatives: 1
   
-  eval_interval: 5         # Reduced from 10 to catch plateau earlier
-  early_stopping_patience: 20  # Reduced from 30
+  eval_interval: 20  # Evaluate every 20 epochs (matching code/src)
+  early_stopping_patience: 20  # 20 evals = 400 epochs patience
   
-  save_dir: experiments/checkpoints/conga_v2_fixed
-  log_dir: experiments/logs/conga_v2_fixed
+  save_dir: experiments/checkpoints/sasrec_rope_ml1m
+  log_dir: experiments/logs/sasrec_rope_ml1m

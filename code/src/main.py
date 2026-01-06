@@ -37,6 +37,7 @@ parser.add_argument('--num_heads', default=1, type=int)
 parser.add_argument('--dropout_rate', default=0.2, type=float)
 parser.add_argument('--l2_emb', default=0.0, type=float)
 parser.add_argument('--device', default='cuda', type=str)
+parser.add_argument('--use_amp', default=True, type=str2bool)
 parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
 parser.add_argument('--norm_first', action='store_true', default=False)
@@ -118,8 +119,9 @@ if __name__ == '__main__':
         betas=(0.9, 0.98),
         weight_decay=0.01
     )
-    
-    scaler: torch.amp.grad_scaler.GradScaler = torch.amp.grad_scaler.GradScaler(device='cuda')
+
+    use_amp: bool = bool(args.use_amp) and str(args.device).startswith('cuda')
+    scaler: Any = torch.amp.grad_scaler.GradScaler(device='cuda') if use_amp else None
     
     best_val_ndcg: float = 0.0
     best_val_hr: float = 0.0
@@ -129,7 +131,10 @@ if __name__ == '__main__':
     t0: float = time.time()
     
     print("\n" + "="*70)
-    print("Starting Training with AMP (Automatic Mixed Precision)")
+    if use_amp:
+        print("Starting Training with AMP (Automatic Mixed Precision)")
+    else:
+        print("Starting Training (FP32)")
     print("="*70)
     print(f"Model: SASRec-RoPE | Dataset: {args.dataset}")
     print(f"Hidden: {args.hidden_units} | Layers: {args.num_blocks} | Heads: {args.num_heads}")
@@ -150,25 +155,39 @@ if __name__ == '__main__':
             u, seq, pos, neg = batch
             
             optimizer.zero_grad()
-            
-            with torch.amp.autocast_mode.autocast(device_type='cuda'):
-                pos_logits: torch.Tensor
-                neg_logits: torch.Tensor
+
+            if use_amp:
+                with torch.amp.autocast_mode.autocast(device_type='cuda'):
+                    pos_logits, neg_logits = model(u, seq, pos, neg)
+
+                    pos_labels: torch.Tensor = torch.ones_like(pos_logits)
+                    neg_labels: torch.Tensor = torch.zeros_like(neg_logits)
+
+                    indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
+                    loss: torch.Tensor = bce_criterion(pos_logits[indices], pos_labels[indices])
+                    loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+
+                    for param in model.item_emb.parameters():
+                        loss += args.l2_emb * torch.sum(param ** 2)
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer=optimizer)
+                scaler.update()
+            else:
                 pos_logits, neg_logits = model(u, seq, pos, neg)
-                
+
                 pos_labels: torch.Tensor = torch.ones_like(pos_logits)
                 neg_labels: torch.Tensor = torch.zeros_like(neg_logits)
-                
+
                 indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
                 loss: torch.Tensor = bce_criterion(pos_logits[indices], pos_labels[indices])
                 loss += bce_criterion(neg_logits[indices], neg_labels[indices])
-                
+
                 for param in model.item_emb.parameters():
                     loss += args.l2_emb * torch.sum(param ** 2)
-            
-            scaler.scale(loss).backward()
-            scaler.step(optimizer=optimizer)
-            scaler.update()
+
+                loss.backward()
+                optimizer.step()
             
             epoch_loss += loss.item()
             num_batches += 1
@@ -184,8 +203,10 @@ if __name__ == '__main__':
             T += t1
             
             with torch.no_grad():
-                t_test: Tuple[float, float] = evaluate(model, dataset, args)
-                t_valid: Tuple[float, float] = evaluate_valid(model, dataset, args)
+                # Ensure evaluation is always FP32 (no autocast)
+                with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=False):
+                    t_test = evaluate(model, dataset, args)
+                    t_valid = evaluate_valid(model, dataset, args)
             
             print(f' | Time: {T:.1f}s')
             print(f'         Valid - NDCG@10: {t_valid[0]:.4f}, HR@10: {t_valid[1]:.4f}')

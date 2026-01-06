@@ -4,7 +4,7 @@
 
 seed: 42
 device: cuda
-use_amp: true
+use_amp: false
 experiment_name: conga_v3
 
 data:
@@ -33,7 +33,7 @@ model:
   temperature: 0.07
 
 training:
-  epochs: 100
+  epochs: 400
   learning_rate: 0.001
   weight_decay: 0.01
   optimizer: adamw
@@ -45,7 +45,7 @@ training:
   num_negatives: 1
   
   eval_interval: 5
-  early_stopping_patience: 20
+  early_stopping_patience: 10
   
   save_dir: experiments/checkpoints/conga_v3
   log_dir: experiments/logs/conga_v3
