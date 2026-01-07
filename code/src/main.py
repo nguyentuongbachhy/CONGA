@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from model import SASRec
+from graph_teacher import LightGCN
 from utils import (
     check_and_convert_dataset, 
     load_metadata, 
@@ -44,6 +45,12 @@ parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
 parser.add_argument('--norm_first', action='store_true', default=False)
 parser.add_argument('--num_workers', default=4, type=int, help='DataLoader workers')
+parser.add_argument('--use_distillation', default=False, type=str2bool, help='Use graph distillation')
+parser.add_argument('--teacher_path', default=None, type=str, help='Path to teacher model checkpoint')
+parser.add_argument('--distill_weight', default=0.5, type=float, help='Weight for distillation loss')
+parser.add_argument('--teacher_dim', default=64, type=int, help='Teacher embedding dimension')
+parser.add_argument('--teacher_layers', default=3, type=int, help='Teacher num layers')
+parser.add_argument('--distill_temp', default=1.0, type=float, help='Temperature for distillation')
 
 args = parser.parse_args()
 
@@ -94,6 +101,26 @@ if __name__ == '__main__':
             pass
 
     model.item_emb.weight.data[0, :] = 0
+    
+    teacher: Any = None
+    if args.use_distillation:
+        if args.teacher_path is None:
+            print('Error: --teacher_path required when --use_distillation is true')
+            exit(1)
+        print(f'Loading teacher model from {args.teacher_path}')
+        teacher = LightGCN(
+            num_users=usernum,
+            num_items=itemnum,
+            embedding_dim=args.teacher_dim,
+            num_layers=args.teacher_layers,
+            device=args.device,
+        ).to(args.device)
+        teacher.load_state_dict(torch.load(args.teacher_path, map_location=torch.device(args.device)))
+        teacher.Graph = teacher.build_graph(user_train)
+        teacher.eval()
+        for param in teacher.parameters():
+            param.requires_grad = False
+        print('Teacher model loaded and frozen')
     
     epoch_start_idx: int = 1
     if args.state_dict_path is not None:
@@ -173,6 +200,36 @@ if __name__ == '__main__':
                     )  # [M, 1+N]
                     loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
+                    if args.use_distillation and teacher is not None:
+                        with torch.no_grad():
+                            pos_t = torch.as_tensor(pos, dtype=torch.long, device=args.device)
+                            neg_t = torch.as_tensor(neg, dtype=torch.long, device=args.device)
+                            batch_users = torch.as_tensor(u, dtype=torch.long, device=args.device)
+                            
+                            teacher_pos_emb = teacher.get_item_embedding(pos_t)
+                            teacher_neg_emb = teacher.get_item_embedding(neg_t)
+                            user_emb = teacher.get_user_embedding(batch_users)
+                            
+                            teacher_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
+                            if teacher_neg_emb.dim() == 3:
+                                teacher_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
+                            else:
+                                teacher_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
+                        
+                        teacher_pos_sel = teacher_pos_logits[indices]
+                        teacher_neg_sel = teacher_neg_logits[indices]
+                        if teacher_neg_sel.dim() == 1:
+                            teacher_neg_sel = teacher_neg_sel.unsqueeze(1)
+                        teacher_cand = torch.cat([teacher_pos_sel.unsqueeze(1), teacher_neg_sel], dim=1)
+                        
+                        distill_loss = F.kl_div(
+                            F.log_softmax(cand_logits / args.distill_temp, dim=1),
+                            F.softmax(teacher_cand / args.distill_temp, dim=1),
+                            reduction='batchmean'
+                        ) * (args.distill_temp ** 2)
+                        
+                        loss = loss + args.distill_weight * distill_loss
+
                     for param in model.item_emb.parameters():
                         loss += args.l2_emb * torch.sum(param ** 2)
 
@@ -192,6 +249,36 @@ if __name__ == '__main__':
                     dim=1,
                 )  # [M, 1+N]
                 loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
+
+                if args.use_distillation and teacher is not None:
+                    with torch.no_grad():
+                        pos_t = torch.as_tensor(pos, dtype=torch.long, device=args.device)
+                        neg_t = torch.as_tensor(neg, dtype=torch.long, device=args.device)
+                        batch_users = torch.as_tensor(u, dtype=torch.long, device=args.device)
+                        
+                        teacher_pos_emb = teacher.get_item_embedding(pos_t)
+                        teacher_neg_emb = teacher.get_item_embedding(neg_t)
+                        user_emb = teacher.get_user_embedding(batch_users)
+                        
+                        teacher_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
+                        if teacher_neg_emb.dim() == 3:
+                            teacher_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
+                        else:
+                            teacher_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
+                    
+                    teacher_pos_sel = teacher_pos_logits[indices]
+                    teacher_neg_sel = teacher_neg_logits[indices]
+                    if teacher_neg_sel.dim() == 1:
+                        teacher_neg_sel = teacher_neg_sel.unsqueeze(1)
+                    teacher_cand = torch.cat([teacher_pos_sel.unsqueeze(1), teacher_neg_sel], dim=1)
+                    
+                    distill_loss = F.kl_div(
+                        F.log_softmax(cand_logits / args.distill_temp, dim=1),
+                        F.softmax(teacher_cand / args.distill_temp, dim=1),
+                        reduction='batchmean'
+                    ) * (args.distill_temp ** 2)
+                    
+                    loss = loss + args.distill_weight * distill_loss
 
                 for param in model.item_emb.parameters():
                     loss += args.l2_emb * torch.sum(param ** 2)
