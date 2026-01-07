@@ -82,10 +82,19 @@ class SASRec(torch.nn.Module):
         log_feats: torch.Tensor = self.log2feats(log_seqs) 
 
         pos_embs: torch.Tensor = self.item_emb(torch.as_tensor(pos_seqs, dtype=torch.long, device=self.dev))
-        neg_embs: torch.Tensor = self.item_emb(torch.as_tensor(neg_seqs, dtype=torch.long, device=self.dev))
+        neg_ids: torch.Tensor = torch.as_tensor(neg_seqs, dtype=torch.long, device=self.dev)
+        neg_embs: torch.Tensor = self.item_emb(neg_ids)
 
         pos_logits: torch.Tensor = (log_feats * pos_embs).sum(dim=-1)
-        neg_logits: torch.Tensor = (log_feats * neg_embs).sum(dim=-1)
+
+        # neg_embs can be:
+        # - [B, L, H] if neg_seqs is [B, L]
+        # - [B, L, N, H] if neg_seqs is [B, L, N]
+        if neg_embs.dim() == 3:
+            neg_logits: torch.Tensor = (log_feats * neg_embs).sum(dim=-1)  # [B, L]
+        else:
+            # [B, L, 1, H] * [B, L, N, H] -> [B, L, N]
+            neg_logits = (log_feats.unsqueeze(-2) * neg_embs).sum(dim=-1)
 
         return pos_logits, neg_logits
     

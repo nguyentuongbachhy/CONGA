@@ -80,9 +80,12 @@ data/
 # Experiments
 experiments/
 
+# code/src artifacts
+code/src/bins/
+code/src/ml-1m_experiments/
+
 # Research artifacts (Option A: keep untracked)
 notebooks/
-papers/
 checkpoints/
 experiments/logs/
 experiments/results/

@@ -5,6 +5,7 @@ from typing import Any, Tuple
 import torch
 import argparse
 import numpy as np
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from model import SASRec
@@ -36,6 +37,7 @@ parser.add_argument('--num_epochs', default=1000, type=int)
 parser.add_argument('--num_heads', default=1, type=int)
 parser.add_argument('--dropout_rate', default=0.2, type=float)
 parser.add_argument('--l2_emb', default=0.0, type=float)
+parser.add_argument('--num_negatives', default=1, type=int, help='Number of negatives per position')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--use_amp', default=True, type=str2bool)
 parser.add_argument('--inference_only', default=False, type=str2bool)
@@ -66,7 +68,8 @@ if __name__ == '__main__':
         args.maxlen, 
         args.batch_size, 
         mode='train',
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        num_negatives=args.num_negatives,
     )
     
     print(f"Training batches per epoch: {len(train_loader)}")
@@ -112,7 +115,6 @@ if __name__ == '__main__':
         exit(0)
     
     model.train()
-    bce_criterion: torch.nn.BCEWithLogitsLoss = torch.nn.BCEWithLogitsLoss()
     optimizer: torch.optim.AdamW = torch.optim.AdamW(
         model.parameters(), 
         lr=args.lr,
@@ -159,13 +161,17 @@ if __name__ == '__main__':
             if use_amp:
                 with torch.amp.autocast_mode.autocast(device_type='cuda'):
                     pos_logits, neg_logits = model(u, seq, pos, neg)
-
-                    pos_labels: torch.Tensor = torch.ones_like(pos_logits)
-                    neg_labels: torch.Tensor = torch.zeros_like(neg_logits)
-
                     indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
-                    loss: torch.Tensor = bce_criterion(pos_logits[indices], pos_labels[indices])
-                    loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+
+                    pos_selected: torch.Tensor = pos_logits[indices]  # [M]
+                    neg_selected: torch.Tensor = neg_logits[indices]  # [M] or [M, N]
+                    if neg_selected.dim() == 1:
+                        neg_selected = neg_selected.unsqueeze(1)
+                    cand_logits: torch.Tensor = torch.cat(
+                        [pos_selected.unsqueeze(1), neg_selected],
+                        dim=1,
+                    )  # [M, 1+N]
+                    loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
                     for param in model.item_emb.parameters():
                         loss += args.l2_emb * torch.sum(param ** 2)
@@ -175,13 +181,17 @@ if __name__ == '__main__':
                 scaler.update()
             else:
                 pos_logits, neg_logits = model(u, seq, pos, neg)
-
-                pos_labels: torch.Tensor = torch.ones_like(pos_logits)
-                neg_labels: torch.Tensor = torch.zeros_like(neg_logits)
-
                 indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
-                loss: torch.Tensor = bce_criterion(pos_logits[indices], pos_labels[indices])
-                loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+
+                pos_selected: torch.Tensor = pos_logits[indices]  # [M]
+                neg_selected: torch.Tensor = neg_logits[indices]  # [M] or [M, N]
+                if neg_selected.dim() == 1:
+                    neg_selected = neg_selected.unsqueeze(1)
+                cand_logits: torch.Tensor = torch.cat(
+                    [pos_selected.unsqueeze(1), neg_selected],
+                    dim=1,
+                )  # [M, 1+N]
+                loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
                 for param in model.item_emb.parameters():
                     loss += args.l2_emb * torch.sum(param ** 2)
