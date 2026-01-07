@@ -189,17 +189,64 @@ class BaseTrainer:
         
         # Mask for valid positions
         mask = (batch["pos_items"] != 0).float()
-        
-        # BCE loss
-        pos_labels = torch.ones_like(pos_logits)
-        neg_labels = torch.zeros_like(neg_logits)
-        
-        loss = (
-            self.criterion(pos_logits, pos_labels) * mask +
-            self.criterion(neg_logits, neg_labels) * mask
-        ).sum() / mask.sum()
-        
-        return loss
+
+        loss_type = "bce"
+        if hasattr(self.config, "training") and hasattr(self.config.training, "loss_type"):
+            loss_type = str(self.config.training.loss_type).lower()
+
+        if loss_type == "bce":
+            pos_labels = torch.ones_like(pos_logits)
+            neg_labels = torch.zeros_like(neg_logits)
+
+            loss = (
+                self.criterion(pos_logits, pos_labels) * mask +
+                self.criterion(neg_logits, neg_labels) * mask
+            ).sum() / mask.sum()
+            return loss
+
+        if loss_type == "bpr":
+            return self.criterion(pos_logits, neg_logits, mask)
+
+        if loss_type == "listmle_simple":
+            return self.criterion(pos_logits, neg_logits, mask)
+
+        if loss_type in ["neuralndcg", "approxndcg", "listmle"]:
+            # Convert (pos, neg) logits into a listwise ranking problem.
+            # Shape becomes [..., 1 + num_neg]. Target is always at index 0.
+            if pos_logits.dim() == 1:
+                pos_logits = pos_logits.unsqueeze(1)
+
+            if neg_logits.dim() == 2:
+                # [B, L] -> [B, L, 1] (one negative per position)
+                neg_logits = neg_logits.unsqueeze(-1)
+
+            if pos_logits.dim() == 2 and neg_logits.dim() == 3:
+                pos_logits = pos_logits.unsqueeze(-1)
+
+            all_logits = torch.cat([pos_logits, neg_logits], dim=-1)
+            labels = torch.zeros_like(all_logits)
+            labels[..., 0] = 1.0
+
+            # Use a boolean mask for valid positions (broadcast over candidates)
+            list_mask = (mask > 0).bool()
+            if list_mask.dim() == 2:
+                list_mask = list_mask.unsqueeze(-1).expand_as(labels)
+
+            # NeuralNDCG / listwise losses are implemented for 2D inputs.
+            # Flatten [B, L, C] -> [B*L, C] and keep only valid (non-pad) positions.
+            if all_logits.dim() == 3:
+                valid_pos = (mask > 0).view(-1)
+                all_logits = all_logits.view(-1, all_logits.size(-1))[valid_pos]
+                labels = labels.view(-1, labels.size(-1))[valid_pos]
+                list_mask = list_mask.view(-1, list_mask.size(-1))[valid_pos]
+
+            # If criterion supports (logits, labels, mask) use it.
+            try:
+                return self.criterion(all_logits, labels, list_mask)
+            except TypeError:
+                return self.criterion(all_logits, labels)
+
+        raise ValueError(f"Unsupported loss_type: {loss_type}")
     
     @torch.no_grad()
     def evaluate(self, loader: DataLoader, split: str = "valid") -> Dict[str, float]:

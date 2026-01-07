@@ -75,6 +75,7 @@ class TrainingConfig:
     
     # Loss function
     loss_type: str = "bce"  # bce, bpr, duo, infonce
+    loss_config: dict = field(default_factory=dict)
     num_negatives: int = 1
     
     # Evaluation

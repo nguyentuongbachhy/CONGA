@@ -7,6 +7,8 @@ from .bpr_loss import BPRLoss
 from .duo_loss import DuoLoss
 from .infonce import InfoNCELoss
 from .distillation import DistillationLoss
+from .listmle_loss import ListMLELoss, ListMLELossSimplified
+from .neuralndcg_loss import NeuralNDCGLoss, ApproxNDCGLoss
 
 __all__ = [
     "BCELoss",
@@ -14,6 +16,10 @@ __all__ = [
     "DuoLoss",
     "InfoNCELoss",
     "DistillationLoss",
+    "ListMLELoss",
+    "ListMLELossSimplified",
+    "NeuralNDCGLoss",
+    "ApproxNDCGLoss",
 ]
 
 
@@ -25,6 +31,10 @@ def get_loss(loss_type: str, **kwargs):
         "duo": DuoLoss,
         "infonce": InfoNCELoss,
         "distill": DistillationLoss,
+        "listmle": ListMLELoss,
+        "listmle_simple": ListMLELossSimplified,
+        "neuralndcg": NeuralNDCGLoss,
+        "approxndcg": ApproxNDCGLoss,
     }
     
     if loss_type.lower() not in losses:

@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 from src.config import Config
 from src.models import get_model
 from src.data.dataset import SequentialDataset, get_dataloader
+from src.losses import get_loss
 from src.trainers.base_trainer import BaseTrainer
 from src.trainers.contrastive_trainer import ContrastiveTrainer, GraphContrastiveTrainer
 from src.trainers.continual_trainer import ContinualTrainer
@@ -182,7 +183,10 @@ def main():
         scheduler = None
     
     # Loss
-    criterion = nn.BCEWithLogitsLoss(reduction="none")
+    loss_kwargs = {}
+    if hasattr(config, "training") and hasattr(config.training, "loss_config") and config.training.loss_config:
+        loss_kwargs = dict(config.training.loss_config)
+    criterion = get_loss(config.training.loss_type, **loss_kwargs)
     
     # Select trainer based on model
     model_name = config.model.model_name.lower()
