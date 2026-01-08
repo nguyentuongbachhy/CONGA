@@ -76,6 +76,7 @@ venv.bak/
 # Project specific
 data/raw/
 data/
+code\src\data
 
 # Experiments
 experiments/
@@ -84,7 +85,7 @@ experiments/
 code/src/bins/
 code/src/ml-1m_experiments/
 
-# Research artifacts (Option A: keep untracked)
+# Research artifacts 
 notebooks/
 checkpoints/
 experiments/logs/
@@ -97,3 +98,13 @@ wandb/
 # OS
 .DS_Store
 Thumbs.db
+
+# Repo allow-list (track only a small set of paths)
+/*
+!/code/
+!/code/**
+!/papers/
+!/papers/**
+!/.gitignore
+!/README.md
+!/requirements.txt
