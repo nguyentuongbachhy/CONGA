@@ -66,10 +66,11 @@ def data_partition(fname: str) -> Tuple[Dict, Dict, Dict, int, int]:
     return user_train, user_valid, user_test, usernum, itemnum
 
 class SASRecDataset(Dataset):
-    def __init__(self, dataset_name: str, maxlen: int, mode: str = 'train'):
+    def __init__(self, dataset_name: str, maxlen: int, mode: str = 'train', num_negatives: int = 1):
         self.dataset_name = dataset_name
         self.maxlen = maxlen
         self.mode = mode
+        self.num_negatives = max(1, int(num_negatives))
         
         bin_dir = Path(f'bins/{dataset_name}_bin')
         self.all_items = np.load(bin_dir / 'all_items.npy', mmap_mode='r')
@@ -106,11 +107,16 @@ class SASRecDataset(Dataset):
             seq_items = full_seq
         
         if len(seq_items) <= 1:
-             return (uid, np.zeros(self.maxlen, dtype=np.int32), np.zeros(self.maxlen, dtype=np.int32), np.zeros(self.maxlen, dtype=np.int32))
+             return (
+                 uid,
+                 np.zeros(self.maxlen, dtype=np.int32),
+                 np.zeros(self.maxlen, dtype=np.int32),
+                 np.zeros((self.maxlen, self.num_negatives), dtype=np.int32),
+             )
         
         seq = np.zeros(self.maxlen, dtype=np.int32)
         pos = np.zeros(self.maxlen, dtype=np.int32)
-        neg = np.zeros(self.maxlen, dtype=np.int32)
+        neg = np.zeros((self.maxlen, self.num_negatives), dtype=np.int32)
         
         nxt = seq_items[-1]
         idx = self.maxlen - 1
@@ -119,15 +125,16 @@ class SASRecDataset(Dataset):
         for i in reversed(seq_items[:-1]):
             seq[idx] = i
             pos[idx] = nxt
-            neg[idx] = self._random_neq(1, self.itemnum + 1, ts)
+            for j in range(self.num_negatives):
+                neg[idx, j] = self._random_neq(1, self.itemnum + 1, ts)
             nxt = i
             idx -= 1
             if idx == -1: break
         
         return uid, seq, pos, neg
 
-def get_dataloader(dataset_name, maxlen, batch_size, mode='train', num_workers=4):
-    dataset = SASRecDataset(dataset_name, maxlen, mode)
+def get_dataloader(dataset_name, maxlen, batch_size, mode='train', num_workers=4, num_negatives: int = 1):
+    dataset = SASRecDataset(dataset_name, maxlen, mode, num_negatives=num_negatives)
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=(mode == 'train'),
         num_workers=num_workers, pin_memory=True, drop_last=False,
