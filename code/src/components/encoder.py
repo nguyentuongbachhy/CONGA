@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Tuple, Callable
+from typing import Optional, Callable
 import torch
 
 from .rope import apply_rotary_pos_emb

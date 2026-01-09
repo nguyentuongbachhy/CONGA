@@ -1,6 +1,5 @@
 import os
 import time
-from typing import Any, Tuple
 
 import torch
 import argparse
@@ -19,12 +18,10 @@ from utils import (
     evaluate_valid
 )
 
-
 def str2bool(s: str) -> bool:
     if s not in {'false', 'true'}:
         raise ValueError('Not a valid boolean string')
     return s == 'true'
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', required=True)
@@ -54,23 +51,24 @@ parser.add_argument('--distill_temp', default=1.0, type=float, help='Temperature
 
 args = parser.parse_args()
 
-# Create output directory
 if not os.path.isdir(args.dataset + '_' + args.train_dir):
     os.makedirs(args.dataset + '_' + args.train_dir)
 with open(os.path.join(args.dataset + '_' + args.train_dir, 'args.txt'), 'w') as f_args:
     f_args.write('\n'.join([str(k) + ',' + str(v) for k, v in sorted(vars(args).items(), key=lambda x: x[0])]))
 
-
 if __name__ == '__main__':
     check_and_convert_dataset(args.dataset)
-    
-    usernum: int
-    itemnum: int
     usernum, itemnum = load_metadata(args.dataset)
-    print(f"Dataset: {args.dataset}")
-    print(f"Users: {usernum}, Items: {itemnum}")
     
-    train_loader: Any = get_dataloader(
+    tensor_mem_gb = (args.batch_size * args.maxlen * args.num_negatives * args.hidden_units * 4) / (1024**3)
+    print(f"Dataset: {args.dataset} | Users: {usernum} | Items: {itemnum}")
+    print(f"Estimated VRAM for Negatives Tensor: {tensor_mem_gb:.2f} GB")
+    
+    if tensor_mem_gb > 8.0:
+        print("\n[WARNING] Cấu hình này yêu cầu VRAM rất lớn!")
+        print("Gợi ý: Giảm --num_negatives (ví dụ: 1) hoặc giảm --batch_size.\n")
+
+    train_loader = get_dataloader(
         args.dataset, 
         args.maxlen, 
         args.batch_size, 
@@ -79,198 +77,106 @@ if __name__ == '__main__':
         num_negatives=args.num_negatives,
     )
     
-    print(f"Training batches per epoch: {len(train_loader)}")
-    
-    dataset: Tuple[Any, Any, Any, Any, Any] = data_partition(args.dataset)
+    dataset = data_partition(args.dataset)
     [user_train, user_valid, user_test, _, _] = dataset
     
-    cc: float = 0.0
-    for u in user_train:
-        cc += len(user_train[u])
-    print(f'Average sequence length: {cc / len(user_train):.2f}')
-    
-    f: Any = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
+    f = open(os.path.join(args.dataset + '_' + args.train_dir, 'log.txt'), 'w')
     f.write('epoch (val_ndcg, val_hr) (test_ndcg, test_hr)\n')
     
-    model: SASRec = SASRec(usernum, itemnum, args).to(args.device)
+    model = SASRec(usernum, itemnum, args).to(args.device)
     
     for name, param in model.named_parameters():
         try:
             torch.nn.init.xavier_normal_(param.data)
         except Exception:
             pass
-
     model.item_emb.weight.data[0, :] = 0
     
-    teacher: Any = None
+    teacher = None
     if args.use_distillation:
         if args.teacher_path is None:
             print('Error: --teacher_path required when --use_distillation is true')
             exit(1)
-        print(f'Loading teacher model from {args.teacher_path}')
         teacher = LightGCN(
-            num_users=usernum,
-            num_items=itemnum,
-            embedding_dim=args.teacher_dim,
-            num_layers=args.teacher_layers,
-            device=args.device,
+            num_users=usernum, num_items=itemnum, embedding_dim=args.teacher_dim,
+            num_layers=args.teacher_layers, device=args.device,
         ).to(args.device)
         teacher.load_state_dict(torch.load(args.teacher_path, map_location=torch.device(args.device)))
-        teacher.Graph = teacher.build_graph(user_train)
+        teacher.build_graph(user_train)
         teacher.eval()
         for param in teacher.parameters():
             param.requires_grad = False
-        print('Teacher model loaded and frozen')
     
-    epoch_start_idx: int = 1
+    epoch_start_idx = 1
     if args.state_dict_path is not None:
         try:
             model.load_state_dict(torch.load(args.state_dict_path, map_location=torch.device(args.device)))
-            tail: str = args.state_dict_path[args.state_dict_path.find('epoch=') + 6:]
+            tail = args.state_dict_path[args.state_dict_path.find('epoch=') + 6:]
             epoch_start_idx = int(tail[:tail.find('.')]) + 1
-            print(f"Loaded checkpoint from epoch {epoch_start_idx - 1}")
         except Exception as e:
-            print(f'Failed loading state_dicts from: {args.state_dict_path}')
-            print(f'Error: {e}')
-            import pdb
-            pdb.set_trace()
+            print(f'Failed loading state_dicts: {e}')
     
     if args.inference_only:
         model.eval()
-        t_test: Tuple[float, float] = evaluate(model, dataset, args)
+        t_test = evaluate(model, dataset, args)
         print(f'Test (NDCG@10: {t_test[0]:.4f}, HR@10: {t_test[1]:.4f})')
         exit(0)
     
-    model.train()
-    optimizer: torch.optim.AdamW = torch.optim.AdamW(
-        model.parameters(), 
-        lr=args.lr,
-        betas=(0.9, 0.98),
-        weight_decay=0.01
-    )
-
-    use_amp: bool = bool(args.use_amp) and str(args.device).startswith('cuda')
-    scaler: Any = torch.amp.grad_scaler.GradScaler(device='cuda') if use_amp else None
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=0.01)
     
-    best_val_ndcg: float = 0.0
-    best_val_hr: float = 0.0
-    best_test_ndcg: float = 0.0
-    best_test_hr: float = 0.0
-    T: float = 0.0
-    t0: float = time.time()
+    use_amp = bool(args.use_amp) and str(args.device).startswith('cuda')
+    scaler = torch.amp.grad_scaler.GradScaler(device='cuda') if use_amp else None
     
-    print("\n" + "="*70)
-    if use_amp:
-        print("Starting Training with AMP (Automatic Mixed Precision)")
-    else:
-        print("Starting Training (FP32)")
-    print("="*70)
-    print(f"Model: SASRec-RoPE | Dataset: {args.dataset}")
-    print(f"Hidden: {args.hidden_units} | Layers: {args.num_blocks} | Heads: {args.num_heads}")
-    print(f"Max Length: {args.maxlen} | Batch Size: {args.batch_size} | LR: {args.lr}")
-    print("="*70 + "\n")
+    best_val_ndcg, best_val_hr = 0.0, 0.0
+    best_test_ndcg, best_test_hr = 0.0, 0.0
+    T, t0 = 0.0, time.time()
     
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         model.train()
-        epoch_loss: float = 0.0
-        num_batches: int = 0
+        epoch_loss, num_batches = 0.0, 0
         
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d}/{args.num_epochs}", unit="batch", ncols=100)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d}", unit="batch", ncols=100)
+        
         for step, batch in enumerate(pbar):
-            u: np.ndarray
-            seq: np.ndarray
-            pos: np.ndarray
-            neg: np.ndarray
-            u, seq, pos, neg = batch
-            
+            u, seq, pos, neg = [x.to(args.device) for x in batch]
             optimizer.zero_grad()
-
-            if use_amp:
-                with torch.amp.autocast_mode.autocast(device_type='cuda'):
-                    pos_logits, neg_logits = model(u, seq, pos, neg)
-                    indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
-
-                    pos_selected: torch.Tensor = pos_logits[indices]  # [M]
-                    neg_selected: torch.Tensor = neg_logits[indices]  # [M] or [M, N]
-                    if neg_selected.dim() == 1:
-                        neg_selected = neg_selected.unsqueeze(1)
-                    cand_logits: torch.Tensor = torch.cat(
-                        [pos_selected.unsqueeze(1), neg_selected],
-                        dim=1,
-                    )  # [M, 1+N]
-                    loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
-
-                    if args.use_distillation and teacher is not None:
-                        with torch.no_grad():
-                            pos_t = torch.as_tensor(pos, dtype=torch.long, device=args.device)
-                            neg_t = torch.as_tensor(neg, dtype=torch.long, device=args.device)
-                            batch_users = torch.as_tensor(u, dtype=torch.long, device=args.device)
-                            
-                            teacher_pos_emb = teacher.get_item_embedding(pos_t)
-                            teacher_neg_emb = teacher.get_item_embedding(neg_t)
-                            user_emb = teacher.get_user_embedding(batch_users)
-                            
-                            teacher_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
-                            if teacher_neg_emb.dim() == 3:
-                                teacher_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
-                            else:
-                                teacher_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
-                        
-                        teacher_pos_sel = teacher_pos_logits[indices]
-                        teacher_neg_sel = teacher_neg_logits[indices]
-                        if teacher_neg_sel.dim() == 1:
-                            teacher_neg_sel = teacher_neg_sel.unsqueeze(1)
-                        teacher_cand = torch.cat([teacher_pos_sel.unsqueeze(1), teacher_neg_sel], dim=1)
-                        
-                        distill_loss = F.kl_div(
-                            F.log_softmax(cand_logits / args.distill_temp, dim=1),
-                            F.softmax(teacher_cand / args.distill_temp, dim=1),
-                            reduction='batchmean'
-                        ) * (args.distill_temp ** 2)
-                        
-                        loss = loss + args.distill_weight * distill_loss
-
-                    for param in model.item_emb.parameters():
-                        loss += args.l2_emb * torch.sum(param ** 2)
-
-                scaler.scale(loss).backward()
-                scaler.step(optimizer=optimizer)
-                scaler.update()
-            else:
+            
+            mask = (pos != 0)
+            mask_exp = mask.unsqueeze(-1).expand(-1, -1, args.num_negatives)
+            
+            with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=use_amp):
                 pos_logits, neg_logits = model(u, seq, pos, neg)
-                indices: Tuple[np.ndarray, ...] = np.where(pos != 0)
-
-                pos_selected: torch.Tensor = pos_logits[indices]  # [M]
-                neg_selected: torch.Tensor = neg_logits[indices]  # [M] or [M, N]
-                if neg_selected.dim() == 1:
-                    neg_selected = neg_selected.unsqueeze(1)
-                cand_logits: torch.Tensor = torch.cat(
-                    [pos_selected.unsqueeze(1), neg_selected],
-                    dim=1,
-                )  # [M, 1+N]
-                loss: torch.Tensor = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
+                
+                pos_sel = torch.masked_select(pos_logits, mask)
+                
+                if neg_logits.dim() == 2:
+                    neg_sel = torch.masked_select(neg_logits, mask).unsqueeze(1)
+                else:
+                    neg_sel = torch.masked_select(neg_logits, mask_exp).view(-1, args.num_negatives)
+                
+                cand_logits = torch.cat([pos_sel.unsqueeze(1), neg_sel], dim=1)
+                
+                loss = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
                 if args.use_distillation and teacher is not None:
                     with torch.no_grad():
-                        pos_t = torch.as_tensor(pos, dtype=torch.long, device=args.device)
-                        neg_t = torch.as_tensor(neg, dtype=torch.long, device=args.device)
-                        batch_users = torch.as_tensor(u, dtype=torch.long, device=args.device)
+                        teacher_pos_emb = teacher.get_item_embedding(pos)
+                        teacher_neg_emb = teacher.get_item_embedding(neg)
+                        user_emb = teacher.get_user_embedding(u) 
                         
-                        teacher_pos_emb = teacher.get_item_embedding(pos_t)
-                        teacher_neg_emb = teacher.get_item_embedding(neg_t)
-                        user_emb = teacher.get_user_embedding(batch_users)
-                        
-                        teacher_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
-                        if teacher_neg_emb.dim() == 3:
-                            teacher_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
+                        t_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
+                        if teacher_neg_emb.dim() == 4:
+                             t_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
                         else:
-                            teacher_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
+                             t_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
                     
-                    teacher_pos_sel = teacher_pos_logits[indices]
-                    teacher_neg_sel = teacher_neg_logits[indices]
-                    if teacher_neg_sel.dim() == 1:
-                        teacher_neg_sel = teacher_neg_sel.unsqueeze(1)
-                    teacher_cand = torch.cat([teacher_pos_sel.unsqueeze(1), teacher_neg_sel], dim=1)
+                    t_pos_sel = torch.masked_select(t_pos_logits, mask)
+                    if t_neg_logits.dim() == 2:
+                        t_neg_sel = torch.masked_select(t_neg_logits, mask).unsqueeze(1)
+                    else:
+                        t_neg_sel = torch.masked_select(t_neg_logits, mask_exp).view(-1, args.num_negatives)
+                        
+                    teacher_cand = torch.cat([t_pos_sel.unsqueeze(1), t_neg_sel], dim=1)
                     
                     distill_loss = F.kl_div(
                         F.log_softmax(cand_logits / args.distill_temp, dim=1),
@@ -278,66 +184,49 @@ if __name__ == '__main__':
                         reduction='batchmean'
                     ) * (args.distill_temp ** 2)
                     
-                    loss = loss + args.distill_weight * distill_loss
+                    loss += args.distill_weight * distill_loss
 
                 for param in model.item_emb.parameters():
                     loss += args.l2_emb * torch.sum(param ** 2)
 
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
                 loss.backward()
                 optimizer.step()
             
             epoch_loss += loss.item()
             num_batches += 1
-            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'avg_loss': f'{epoch_loss/num_batches:.4f}'})
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
-        avg_loss: float = epoch_loss / len(train_loader)
-        
+        avg_loss = epoch_loss / max(1, num_batches)
         print(f'Epoch {epoch:3d} | Avg Loss: {avg_loss:.4f}', end='')
         
         if epoch % 20 == 0:
             model.eval()
-            t1: float = time.time() - t0
-            T += t1
-            
+            T += time.time() - t0
             with torch.no_grad():
-                # Ensure evaluation is always FP32 (no autocast)
-                with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=False):
-                    t_test = evaluate(model, dataset, args)
-                    t_valid = evaluate_valid(model, dataset, args)
+                 t_test = evaluate(model, dataset, args)
+                 t_valid = evaluate_valid(model, dataset, args)
             
             print(f' | Time: {T:.1f}s')
-            print(f'         Valid - NDCG@10: {t_valid[0]:.4f}, HR@10: {t_valid[1]:.4f}')
-            print(f'         Test  - NDCG@10: {t_test[0]:.4f}, HR@10: {t_test[1]:.4f}')
+            print(f'         Valid: {t_valid} | Test: {t_test}')
             
-            is_best: bool = False
-            if t_valid[0] > best_val_ndcg or t_valid[1] > best_val_hr or \
-               t_test[0] > best_test_ndcg or t_test[1] > best_test_hr:
-                best_val_ndcg = max(t_valid[0], best_val_ndcg)
-                best_val_hr = max(t_valid[1], best_val_hr)
-                best_test_ndcg = max(t_test[0], best_test_ndcg)
-                best_test_hr = max(t_test[1], best_test_hr)
-                is_best = True
-                
-                folder: str = args.dataset + '_' + args.train_dir
-                fname: str = f'SASRec.epoch={epoch}.lr={args.lr}.layer={args.num_blocks}.head={args.num_heads}.hidden={args.hidden_units}.maxlen={args.maxlen}.pth'
+            if t_valid[0] > best_val_ndcg:
+                best_val_ndcg, best_val_hr = t_valid
+                best_test_ndcg, best_test_hr = t_test
+                folder = args.dataset + '_' + args.train_dir
+                fname = f'SASRec.best.pth'
                 torch.save(model.state_dict(), os.path.join(folder, fname))
-                print(f'         ✓ New best model saved: {fname}')
-            
-            if is_best:
-                print(f'         Best so far - Valid NDCG: {best_val_ndcg:.4f}, Test NDCG: {best_test_ndcg:.4f}')
+                print(f'         ✓ Saved best model')
             
             f.write(f'{epoch} {t_valid} {t_test}\n')
             f.flush()
             t0 = time.time()
-            print()
         else:
             print()
-    
-    folder = args.dataset + '_' + args.train_dir
-    fname = f'SASRec.epoch={args.num_epochs}.lr={args.lr}.layer={args.num_blocks}.head={args.num_heads}.hidden={args.hidden_units}.maxlen={args.maxlen}.pth'
-    torch.save(model.state_dict(), os.path.join(folder, fname))
-    print(f"\nFinal model saved: {fname}")
-    
+            
     f.close()
     print("Training completed!")
-
