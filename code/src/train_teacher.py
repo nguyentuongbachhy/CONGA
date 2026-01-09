@@ -1,10 +1,7 @@
-"""
-Train LightGCN teacher model for graph distillation
-"""
 import os
 import argparse
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 import numpy as np
@@ -29,7 +26,6 @@ def str2bool(s: str) -> bool:
 def sample_neg_items(
     user_train: Dict[int, List[int]], num_items: int, num_neg: int = 1
 ) -> Dict[int, List[int]]:
-    """Sample negative items for each user"""
     user_neg = {}
     for user_id, items in user_train.items():
         if user_id == 0:
@@ -55,7 +51,6 @@ def train_epoch(
     epoch: int = 1,
     total_epochs: int = 100,
 ) -> float:
-    """Train one epoch"""
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -165,7 +160,7 @@ def main():
     )
 
     print("Building graph...")
-    model.Graph = model.build_graph(user_train)
+    model.build_graph(user_train)
     print("Graph built!")
 
     print("\n" + "=" * 70)
