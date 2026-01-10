@@ -1,9 +1,8 @@
-import math
 from typing import Optional, Callable
 import torch
+import torch.nn.functional as F
 
 from .rope import apply_rotary_pos_emb
-
 
 class EncoderLayer(torch.nn.Module):
     def __init__(self, hidden_units: int, num_heads: int, dropout_rate: float) -> None:
@@ -24,7 +23,7 @@ class EncoderLayer(torch.nn.Module):
         
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor], rotary_emb_fn: Optional[Callable] = None) -> torch.Tensor:
         B, L, H = x.shape
-        
+
         q = self.W_q(x).view(B, L, self.num_heads, self.head_dim)
         k = self.W_k(x).view(B, L, self.num_heads, self.head_dim)
         v = self.W_v(x).view(B, L, self.num_heads, self.head_dim)
@@ -36,18 +35,17 @@ class EncoderLayer(torch.nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         
-        if attn_mask is not None:
-            scores = scores.masked_fill(attn_mask == 0, torch.finfo(scores.dtype).min)
-
-        attn_weights = torch.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        context = torch.matmul(attn_weights, v)
+        use_causal = True if attn_mask is None else False
+        
+        context = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask, 
+            dropout_p=self.dropout.p if self.training else 0.0,
+            is_causal=use_causal
+        )
         
         context = context.transpose(1, 2).contiguous().view(B, L, H)
         
         output = self.out_proj(context)
-        return output 
+        return output

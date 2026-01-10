@@ -1,5 +1,5 @@
 # Byte-compiled / optimized / DLL files
-**/__pycache__/
+**/__pycache__
 *.py[cod]
 *$py.class
 
@@ -83,7 +83,7 @@ experiments/
 
 # code/src artifacts
 **/src/bins/
-**/ml-1m_*/
+**/ml-1m*
 
 # Research artifacts 
 notebooks/

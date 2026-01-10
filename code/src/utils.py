@@ -69,7 +69,7 @@ class SASRecDataset(Dataset):
         self.dataset_name = dataset_name
         self.maxlen = maxlen
         self.mode = mode
-        self.num_negatives = max(1, int(num_negatives))
+        # self.num_negatives không còn dùng trong __getitem__ nữa nhưng cứ giữ để tương thích init
         
         bin_dir = Path(f'bins/{dataset_name}_bin')
         self.all_items = np.load(bin_dir / 'all_items.npy', mmap_mode='r')
@@ -87,7 +87,7 @@ class SASRecDataset(Dataset):
         offset, length = self.user_index[uid]
         return np.array(self.all_items[offset:offset + length], dtype=np.int32)
     
-    def __getitem__(self, idx: int) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+    def __getitem__(self, idx: int):
         uid = self.valid_users[idx]
         full_seq = self._get_user_sequence(uid)
         
@@ -99,44 +99,22 @@ class SASRecDataset(Dataset):
             seq_items = full_seq
             
         seq_len = len(seq_items)
+        
+        seq = np.zeros(self.maxlen, dtype=np.int32)
+        pos = np.zeros(self.maxlen, dtype=np.int32)
+        
         if seq_len <= 1:
-             return (
-                 uid,
-                 np.zeros(self.maxlen, dtype=np.int32),
-                 np.zeros(self.maxlen, dtype=np.int32),
-                 np.zeros((self.maxlen, self.num_negatives), dtype=np.int32),
-             )
+             return uid, seq, pos
         
         input_seq = seq_items[:-1]
         target_pos = seq_items[1:]
         
         eff_len = min(len(input_seq), self.maxlen)
         
-        seq = np.zeros(self.maxlen, dtype=np.int32)
-        pos = np.zeros(self.maxlen, dtype=np.int32)
-        
         seq[-eff_len:] = input_seq[-eff_len:]
         pos[-eff_len:] = target_pos[-eff_len:]
-        
-        ts = set(seq_items)
-        num_samples = eff_len * self.num_negatives
-        
-        samples = np.random.randint(1, self.itemnum + 1, size=int(num_samples * 1.2), dtype=np.int32)
-        
-        valid_samples = [s for s in samples if s not in ts]
-        
-        while len(valid_samples) < num_samples:
-            t = np.random.randint(1, self.itemnum + 1)
-            while t in ts:
-                t = np.random.randint(1, self.itemnum + 1)
-            valid_samples.append(t)
-            
-        neg_data = np.array(valid_samples[:num_samples], dtype=np.int32).reshape(eff_len, self.num_negatives)
-        
-        neg = np.zeros((self.maxlen, self.num_negatives), dtype=np.int32)
-        neg[-eff_len:, :] = neg_data
-        
-        return uid, seq, pos, neg
+
+        return uid, seq, pos
 
 def get_dataloader(dataset_name, maxlen, batch_size, mode='train', num_workers=4, num_negatives: int = 1):
     dataset = SASRecDataset(dataset_name, maxlen, mode, num_negatives=num_negatives)

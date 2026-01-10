@@ -3,12 +3,11 @@ import time
 
 import torch
 import argparse
-import numpy as np
 import torch.nn.functional as F
 from tqdm import tqdm
 
 from model import SASRec
-from graph_teacher import LightGCN
+# from graph_teacher import LightGCN
 from utils import (
     check_and_convert_dataset, 
     load_metadata, 
@@ -34,7 +33,6 @@ parser.add_argument('--num_blocks', default=2, type=int)
 parser.add_argument('--num_epochs', default=1000, type=int)
 parser.add_argument('--num_heads', default=1, type=int)
 parser.add_argument('--dropout_rate', default=0.2, type=float)
-parser.add_argument('--l2_emb', default=0.0, type=float)
 parser.add_argument('--num_negatives', default=1, type=int, help='Number of negatives per position')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--use_amp', default=True, type=str2bool)
@@ -42,12 +40,6 @@ parser.add_argument('--inference_only', default=False, type=str2bool)
 parser.add_argument('--state_dict_path', default=None, type=str)
 parser.add_argument('--norm_first', action='store_true', default=False)
 parser.add_argument('--num_workers', default=4, type=int, help='DataLoader workers')
-parser.add_argument('--use_distillation', default=False, type=str2bool, help='Use graph distillation')
-parser.add_argument('--teacher_path', default=None, type=str, help='Path to teacher model checkpoint')
-parser.add_argument('--distill_weight', default=0.5, type=float, help='Weight for distillation loss')
-parser.add_argument('--teacher_dim', default=64, type=int, help='Teacher embedding dimension')
-parser.add_argument('--teacher_layers', default=3, type=int, help='Teacher num layers')
-parser.add_argument('--distill_temp', default=1.0, type=float, help='Temperature for distillation')
 
 args = parser.parse_args()
 
@@ -92,21 +84,6 @@ if __name__ == '__main__':
             pass
     model.item_emb.weight.data[0, :] = 0
     
-    teacher = None
-    if args.use_distillation:
-        if args.teacher_path is None:
-            print('Error: --teacher_path required when --use_distillation is true')
-            exit(1)
-        teacher = LightGCN(
-            num_users=usernum, num_items=itemnum, embedding_dim=args.teacher_dim,
-            num_layers=args.teacher_layers, device=args.device,
-        ).to(args.device)
-        teacher.load_state_dict(torch.load(args.teacher_path, map_location=torch.device(args.device)))
-        teacher.build_graph(user_train)
-        teacher.eval()
-        for param in teacher.parameters():
-            param.requires_grad = False
-    
     epoch_start_idx = 1
     if args.state_dict_path is not None:
         try:
@@ -130,6 +107,7 @@ if __name__ == '__main__':
     best_val_ndcg, best_val_hr = 0.0, 0.0
     best_test_ndcg, best_test_hr = 0.0, 0.0
     T, t0 = 0.0, time.time()
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
     
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         model.train()
@@ -137,57 +115,28 @@ if __name__ == '__main__':
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d}", unit="batch", ncols=100)
         
-        for step, batch in enumerate(pbar):
-            u, seq, pos, neg = [x.to(args.device) for x in batch]
+        for step, (u, seq, pos) in enumerate(pbar):
+            u, seq, pos = [x.to(args.device) for x in [u, seq, pos]]
+
+            neg = torch.randint(1, itemnum + 1, (u.size(0), args.maxlen, args.num_negatives), device=args.device)
+
+            collision = (neg == pos.unsqueeze(-1))
+            neg[collision] = (neg[collision] % itemnum) + 1
             optimizer.zero_grad()
-            
-            mask = (pos != 0)
-            mask_exp = mask.unsqueeze(-1).expand(-1, -1, args.num_negatives)
-            
+            mask = (pos != 0) 
+
             with torch.amp.autocast_mode.autocast(device_type='cuda', enabled=use_amp):
                 pos_logits, neg_logits = model(u, seq, pos, neg)
-                
-                pos_sel = torch.masked_select(pos_logits, mask)
-                
-                if neg_logits.dim() == 2:
-                    neg_sel = torch.masked_select(neg_logits, mask).unsqueeze(1)
-                else:
-                    neg_sel = torch.masked_select(neg_logits, mask_exp).view(-1, args.num_negatives)
-                
-                cand_logits = torch.cat([pos_sel.unsqueeze(1), neg_sel], dim=1)
-                
-                loss = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
-                if args.use_distillation and teacher is not None:
-                    with torch.no_grad():
-                        teacher_pos_emb = teacher.get_item_embedding(pos)
-                        teacher_neg_emb = teacher.get_item_embedding(neg)
-                        user_emb = teacher.get_user_embedding(u) 
-                        
-                        t_pos_logits = (user_emb.unsqueeze(1) * teacher_pos_emb).sum(dim=-1)
-                        if teacher_neg_emb.dim() == 4:
-                             t_neg_logits = (user_emb.unsqueeze(1).unsqueeze(2) * teacher_neg_emb).sum(dim=-1)
-                        else:
-                             t_neg_logits = (user_emb.unsqueeze(1) * teacher_neg_emb).sum(dim=-1)
-                    
-                    t_pos_sel = torch.masked_select(t_pos_logits, mask)
-                    if t_neg_logits.dim() == 2:
-                        t_neg_sel = torch.masked_select(t_neg_logits, mask).unsqueeze(1)
-                    else:
-                        t_neg_sel = torch.masked_select(t_neg_logits, mask_exp).view(-1, args.num_negatives)
-                        
-                    teacher_cand = torch.cat([t_pos_sel.unsqueeze(1), t_neg_sel], dim=1)
-                    
-                    distill_loss = F.kl_div(
-                        F.log_softmax(cand_logits / args.distill_temp, dim=1),
-                        F.softmax(teacher_cand / args.distill_temp, dim=1),
-                        reduction='batchmean'
-                    ) * (args.distill_temp ** 2)
-                    
-                    loss += args.distill_weight * distill_loss
+                logits = torch.cat([pos_logits.unsqueeze(-1), neg_logits], dim=-1)
 
-                for param in model.item_emb.parameters():
-                    loss += args.l2_emb * torch.sum(param ** 2)
+                targets = torch.zeros((logits.size(0), logits.size(1)), dtype=torch.long, device=args.device)
+
+                loss_per_token = loss_fn(logits.view(-1, 1 + args.num_negatives), targets.view(-1))
+                
+                loss_per_token = loss_per_token.view(logits.size(0), logits.size(1))
+                
+                loss = (loss_per_token * mask).sum() / mask.sum()
 
             if use_amp and scaler is not None:
                 scaler.scale(loss).backward()
