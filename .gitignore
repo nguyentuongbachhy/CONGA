@@ -99,12 +99,12 @@ wandb/
 .DS_Store
 Thumbs.db
 
-# Repo allow-list (track only a small set of paths)
-/*
-!/code/
-!/code/**
-!/papers/
-!/papers/**
-!/.gitignore
-!/README.md
-!/requirements.txt
+# # Repo allow-list (track only a small set of paths)
+# /*
+# !/code/
+# !/code/**
+# !/papers/
+# !/papers/**
+# !/.gitignore
+# !/README.md
+# !/requirements.txt
