@@ -1,7 +1,8 @@
 import torch
 from typing import Any, Tuple
 
-from components import PointWiseFeedForward, RotaryEmbedding, EncoderLayer, MHCLayer
+from components import SwiGLU, RotaryEmbedding, EncoderLayer, MHCLayer
+
 
 class SASRec(torch.nn.Module):
     def __init__(self, user_num: int, item_num: int, args: Any) -> None:
@@ -42,7 +43,7 @@ class SASRec(torch.nn.Module):
 
             self.forward_layernorms.append(torch.nn.LayerNorm(args.hidden_units, eps=1e-8))
             self.forward_layers.append(
-                PointWiseFeedForward(args.hidden_units, args.dropout_rate)
+                SwiGLU(args.hidden_units, args.dropout_rate)
             )
             self.mhc_ffn_layers.append(
                 MHCLayer(args.hidden_units, num_streams=self.num_streams)

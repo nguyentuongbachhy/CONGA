@@ -69,7 +69,7 @@ class SASRecDataset(Dataset):
         self.dataset_name = dataset_name
         self.maxlen = maxlen
         self.mode = mode
-        # self.num_negatives không còn dùng trong __getitem__ nữa nhưng cứ giữ để tương thích init
+        self.num_negatives = max(1, int(num_negatives))
         
         bin_dir = Path(f'bins/{dataset_name}_bin')
         self.all_items = np.load(bin_dir / 'all_items.npy', mmap_mode='r')
@@ -87,7 +87,7 @@ class SASRecDataset(Dataset):
         offset, length = self.user_index[uid]
         return np.array(self.all_items[offset:offset + length], dtype=np.int32)
     
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray]:
         uid = self.valid_users[idx]
         full_seq = self._get_user_sequence(uid)
         
@@ -99,22 +99,44 @@ class SASRecDataset(Dataset):
             seq_items = full_seq
             
         seq_len = len(seq_items)
-        
-        seq = np.zeros(self.maxlen, dtype=np.int32)
-        pos = np.zeros(self.maxlen, dtype=np.int32)
-        
         if seq_len <= 1:
-             return uid, seq, pos
+             return (
+                 uid,
+                 np.zeros(self.maxlen, dtype=np.int32),
+                 np.zeros(self.maxlen, dtype=np.int32),
+                 np.zeros((self.maxlen, self.num_negatives), dtype=np.int32),
+             )
         
         input_seq = seq_items[:-1]
         target_pos = seq_items[1:]
         
         eff_len = min(len(input_seq), self.maxlen)
         
+        seq = np.zeros(self.maxlen, dtype=np.int32)
+        pos = np.zeros(self.maxlen, dtype=np.int32)
+        
         seq[-eff_len:] = input_seq[-eff_len:]
         pos[-eff_len:] = target_pos[-eff_len:]
-
-        return uid, seq, pos
+        
+        num_samples = eff_len * self.num_negatives
+        candidates = np.random.randint(1, self.itemnum + 1, size=num_samples * 2, dtype=np.int32)
+        mask = np.isin(candidates, seq_items, invert=True)
+        neg_flat = candidates[mask]
+        
+        while len(neg_flat) < num_samples:
+            n_needed = num_samples - len(neg_flat)
+            extra_cand = np.random.randint(1, self.itemnum + 1, size=n_needed * 2, dtype=np.int32)
+            extra_mask = np.isin(extra_cand, seq_items, invert=True)
+            neg_flat = np.concatenate((neg_flat, extra_cand[extra_mask]))
+            
+        neg_flat = neg_flat[:num_samples]
+            
+        neg_data = neg_flat.reshape(eff_len, self.num_negatives)
+        
+        neg = np.zeros((self.maxlen, self.num_negatives), dtype=np.int32)
+        neg[-eff_len:, :] = neg_data
+        
+        return uid, seq, pos, neg
 
 def get_dataloader(dataset_name, maxlen, batch_size, mode='train', num_workers=4, num_negatives: int = 1):
     dataset = SASRecDataset(dataset_name, maxlen, mode, num_negatives=num_negatives)
@@ -125,7 +147,7 @@ def get_dataloader(dataset_name, maxlen, batch_size, mode='train', num_workers=4
     )
 
 def _batch_evaluate_logic(model, dataset, args, mode='test'):
-    [train, valid, test, usernum, itemnum] = dataset
+    train, valid, test, usernum, itemnum = dataset
     NDCG = 0.0
     HT = 0.0
     valid_user = 0.0
@@ -177,9 +199,10 @@ def _batch_evaluate_logic(model, dataset, args, mode='test'):
         np_seqs = np.array(batch_seqs)
         np_items = np.array(batch_item_indices)
         predictions = model.predict(np_u_ids, np_seqs, np_items)
+        
         target_scores = predictions[:, 0]
-        ranks = (predictions > target_scores.unsqueeze(1)).sum(dim=1)
-        ranks = ranks.cpu().numpy()
+        ranks = (predictions > target_scores.unsqueeze(1)).sum(dim=1).float()
+        ranks = ranks.cpu().numpy().astype(np.int32)
         valid_user += len(ranks)
         hits = (ranks < 10).astype(np.float32)
         ndcgs = hits * (1.0 / np.log2(ranks + 2.0))
