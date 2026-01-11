@@ -1,8 +1,8 @@
-from .rope import RotaryEmbedding, rotate_half, apply_rotary_pos_emb
-from .ffn import PointWiseFeedForward
+from .rope import RotaryEmbedding, apply_rotary_pos_emb
+from .ffn import SwiGLU
 from .encoder import EncoderLayer
 from .mhc import MHCLayer
 
 __all__: list[str] = [
-    "RotaryEmbedding", "PointWiseFeedForward", "EncoderLayer", "MHCLayer", "rotate_half", "apply_rotary_pos_emb"
+    "RotaryEmbedding", "SwiGLU", "EncoderLayer", "MHCLayer", "apply_rotary_pos_emb"
 ]
