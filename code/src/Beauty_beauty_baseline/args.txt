@@ -1,0 +1,16 @@
+batch_size,256
+dataset,Beauty
+device,cuda
+dropout_rate,0.2
+hidden_units,50
+inference_only,False
+lr,0.001
+maxlen,300
+norm_first,True
+num_blocks,2
+num_epochs,100
+num_heads,1
+num_negatives,9
+num_workers,2
+state_dict_path,None
+train_dir,beauty_baseline
