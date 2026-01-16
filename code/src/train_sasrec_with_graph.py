@@ -29,6 +29,114 @@ def str2bool(s: str) -> bool:
     return s.lower() == 'true'
 
 
+def listmle_loss(y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    """
+    ListMLE loss based on Plackett-Luce model.
+    Reference: "Listwise Approach to Learning to Rank" (Xia et al., 2008)
+    """
+    y_true_sorted, indices = y_true.sort(descending=True, dim=-1)
+    preds_sorted_by_true = torch.gather(y_pred, dim=1, index=indices)
+    max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
+    preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
+    cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
+    observation_loss = torch.log(cumsums + eps) - preds_sorted_by_true_minus_max
+    return torch.mean(torch.sum(observation_loss, dim=1))
+
+
+def p_listmle_loss(y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    """
+    Position-aware ListMLE (p-ListMLE) loss.
+    Reference: "Position-Aware ListMLE: A Sequential Learning Process for Ranking" (Lan et al., 2014)
+    """
+    y_true_sorted, indices = y_true.sort(descending=True, dim=-1)
+    preds_sorted_by_true = torch.gather(y_pred, dim=1, index=indices)
+    max_pred_values, _ = preds_sorted_by_true.max(dim=1, keepdim=True)
+    preds_sorted_by_true_minus_max = preds_sorted_by_true - max_pred_values
+    cumsums = torch.cumsum(preds_sorted_by_true_minus_max.exp().flip(dims=[1]), dim=1).flip(dims=[1])
+    observation_loss = torch.log(cumsums + eps) - preds_sorted_by_true_minus_max
+    slate_length = y_pred.shape[1]
+    positions = torch.arange(1, slate_length + 1, dtype=torch.float32, device=y_pred.device)
+    position_weights = 1.0 / torch.log2(positions + 1.0)
+    position_weights = position_weights.unsqueeze(0)
+    weighted_loss = observation_loss * position_weights
+    return torch.mean(torch.sum(weighted_loss, dim=1))
+
+
+def p_sampled_softmax_loss(y_pred: torch.Tensor, y_true: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    """
+    Position-aware Sampled Softmax loss.
+    """
+    softmax_probs = F.log_softmax(y_pred, dim=1)
+    base_loss = -softmax_probs[:, 0]
+    slate_length = y_pred.shape[1]
+    positions = torch.arange(1, slate_length + 1, dtype=torch.float32, device=y_pred.device)
+    position_weights = 1.0 / torch.log2(positions + 1.0)
+    position_weights = position_weights.unsqueeze(0)
+    weighted_loss = base_loss * position_weights[:, 0]
+    return torch.mean(weighted_loss)
+
+
+def mmcl_loss(y_pred: torch.Tensor, y_true: torch.Tensor, 
+              margins=[0.2, 0.5, 0.8], weights=[1.0, 0.5, 0.2], 
+              temperature=1.0, eps=1e-10) -> torch.Tensor:
+    """
+    Multi-Margin Cosine Loss (MMCL) for recommendation systems.
+    Reference: "Multi-Margin Cosine Loss: Proposal and Application in Recommender Systems" (Ozsoy, 2024)
+    """
+    y_pred_scaled = y_pred / temperature
+    pos_sim = y_pred_scaled[:, 0]
+    neg_sims = y_pred_scaled[:, 1:]
+    pos_loss = torch.mean(torch.relu(1.0 - pos_sim))
+    neg_loss = 0.0
+    for margin, weight in zip(margins, weights):
+        margin_term = neg_sims - margin
+        neg_loss += weight * torch.mean(F.softplus(margin_term))
+    total_loss = pos_loss + neg_loss
+    return total_loss
+
+
+def gbce_loss(y_pred: torch.Tensor, y_true: torch.Tensor, 
+              alpha=0.75, temperature=1.0, eps=1e-10) -> torch.Tensor:
+    """
+    Generalized Binary Cross-Entropy (gBCE) loss for recommendation systems.
+    Reference: "gSASRec: Reducing Overconfidence in Sequential Recommendation Trained with Negative Sampling" (2023)
+    """
+    y_pred_scaled = y_pred / temperature
+    sigmoid_pred = torch.sigmoid(y_pred_scaled)
+    bce_loss = -(y_true * torch.log(sigmoid_pred + eps) + 
+                 (1 - y_true) * torch.log(1 - sigmoid_pred + eps))
+    bce_loss = torch.mean(bce_loss)
+    ce_loss = -F.log_softmax(y_pred_scaled, dim=1)[:, 0]
+    ce_loss = torch.mean(ce_loss)
+    total_loss = alpha * bce_loss + (1 - alpha) * ce_loss
+    return total_loss
+
+
+def p_gbce_loss(y_pred: torch.Tensor, y_true: torch.Tensor, 
+                alpha=0.75, temperature=1.0, eps=1e-10) -> torch.Tensor:
+    """
+    Position-Aware Generalized Binary Cross-Entropy (p-gBCE) loss.
+    Novel combination: gBCE (overconfidence mitigation) + position-aware weighting (NDCG-style).
+    """
+    y_pred_scaled = y_pred / temperature
+    slate_length = y_pred.shape[1]
+    positions = torch.arange(1, slate_length + 1, dtype=torch.float32, device=y_pred.device)
+    position_weights = 1.0 / torch.log2(positions + 1.0)
+    position_weights = position_weights.unsqueeze(0)
+    sigmoid_pred = torch.sigmoid(y_pred_scaled)
+    bce_loss_per_item = -(y_true * torch.log(sigmoid_pred + eps) + 
+                          (1 - y_true) * torch.log(1 - sigmoid_pred + eps))
+    weighted_bce_loss = bce_loss_per_item * position_weights
+    weighted_bce_loss = torch.mean(weighted_bce_loss)
+    ce_loss_per_item = -F.log_softmax(y_pred_scaled, dim=1)
+    weighted_ce_loss = ce_loss_per_item * position_weights
+    positive_mask = y_true == 1.0
+    weighted_ce_loss = weighted_ce_loss * positive_mask
+    weighted_ce_loss = torch.mean(weighted_ce_loss)
+    total_loss = alpha * weighted_bce_loss + (1 - alpha) * weighted_ce_loss
+    return total_loss
+
+
 parser = argparse.ArgumentParser(description='Train SASRec with graph-initialized embeddings')
 parser.add_argument('--dataset', required=True)
 parser.add_argument('--train_dir', required=True)
@@ -60,6 +168,9 @@ parser.add_argument('--cms_medium_weight', default=0.3, type=float,
                     help='Weight for medium memory in CMS (session patterns)')
 parser.add_argument('--cms_slow_weight', default=0.2, type=float,
                     help='Weight for slow memory in CMS (long-term knowledge)')
+parser.add_argument('--loss_type', default='sampled_softmax', type=str, 
+                    choices=['sampled_softmax', 'p_sampled_softmax', 'listmle', 'p_listmle', 'mmcl', 'gbce', 'p_gbce'],
+                    help='Loss function: sampled_softmax (default), p_sampled_softmax, listmle, p_listmle, mmcl, gbce, or p_gbce')
 
 args = parser.parse_args()
 
@@ -84,6 +195,20 @@ if __name__ == '__main__':
     if tensor_mem_gb > 8.0:
         print("\n[WARNING] Cấu hình này yêu cầu VRAM rất lớn!")
         print("Gợi ý: Giảm --num_negatives (ví dụ: 1) hoặc giảm --batch_size.\n")
+    
+    print(f"Loss function: {args.loss_type}")
+    if args.loss_type in ['listmle', 'p_listmle']:
+        print(f"  Using Plackett-Luce ranking loss with {args.num_negatives} negatives")
+        if args.loss_type == 'p_listmle':
+            print(f"  Position-aware weighting enabled (NDCG-style discount)")
+    elif args.loss_type == 'p_sampled_softmax':
+        print(f"  Using position-aware sampled softmax with {args.num_negatives} negatives")
+    elif args.loss_type == 'mmcl':
+        print(f"  Using Multi-Margin Cosine Loss with {args.num_negatives} negatives")
+    elif args.loss_type in ['gbce', 'p_gbce']:
+        print(f"  Using Generalized BCE (overconfidence mitigation) with {args.num_negatives} negatives")
+        if args.loss_type == 'p_gbce':
+            print(f"  Position-aware weighting enabled")
     
     if args.use_nested_learning:
         print(f"Nested Learning (CMS): ENABLED")
@@ -232,7 +357,35 @@ if __name__ == '__main__':
             
             cand_logits = torch.cat([pos_sel.unsqueeze(1), neg_sel], dim=1)
             
-            loss = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
+            # Compute loss based on selected loss function
+            if args.loss_type == 'sampled_softmax':
+                loss = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
+            elif args.loss_type == 'p_sampled_softmax':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = p_sampled_softmax_loss(cand_logits, cand_labels)
+            elif args.loss_type == 'listmle':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = listmle_loss(cand_logits, cand_labels)
+            elif args.loss_type == 'p_listmle':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = p_listmle_loss(cand_logits, cand_labels)
+            elif args.loss_type == 'mmcl':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = mmcl_loss(cand_logits, cand_labels)
+            elif args.loss_type == 'gbce':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = gbce_loss(cand_logits, cand_labels)
+            elif args.loss_type == 'p_gbce':
+                cand_labels = torch.zeros_like(cand_logits)
+                cand_labels[:, 0] = 1.0
+                loss = p_gbce_loss(cand_logits, cand_labels)
+            else:
+                loss = (-F.log_softmax(cand_logits, dim=1)[:, 0]).mean()
 
             loss.backward()
             optimizer.step()
