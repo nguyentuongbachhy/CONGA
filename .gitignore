@@ -99,6 +99,11 @@ wandb/
 .DS_Store
 Thumbs.db
 
+pattern_mining/
+tuning/
+pretrained_embeddings/
+benchmark/
+
 # # Repo allow-list (track only a small set of paths)
 # /*
 # !/code/
