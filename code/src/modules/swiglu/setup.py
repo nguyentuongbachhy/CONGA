@@ -8,7 +8,8 @@ def get_nvcc_args():
         '-O3', 
         '--use_fast_math',
         '-allow-unsupported-compiler',
-        '-Xcompiler=/permissive-'
+        '-Xcompiler=-fPIC', 
+        '-std=c++17'
     ]
     
     if os.getenv("TORCH_CUDA_ARCH_LIST"):
@@ -42,10 +43,10 @@ setup(
                 'src/binding.cu',
             ],
             extra_compile_args={
-                'cxx': ['-O3'],
+                'cxx': ['-O3', '-fPIC'],
                 'nvcc': get_nvcc_args()
             }
         )
     ],
-    cmdclass={'build_ext': BuildExtension}
+    cmdclass={'build_ext': BuildExtension.with_options(use_ninja=True)}
 )

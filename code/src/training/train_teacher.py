@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from graph_teacher import LightGCN, bpr_loss
+from models.graph_teacher import LightGCN, bpr_loss
 from utils import (
     check_and_convert_dataset,
     load_metadata,
@@ -109,7 +109,7 @@ def train_epoch(
     return total_loss / max(num_batches, 1)
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train LightGCN teacher")
     parser.add_argument("--dataset", required=True, type=str)
     parser.add_argument("--output_dir", required=True, type=str)
@@ -126,12 +126,12 @@ def parse_args():
 
 
 class Args:
-    def __init__(self, maxlen: int, device: str):
+    def __init__(self, maxlen: int, device: str) -> None:
         self.maxlen = maxlen
         self.device = device
 
 
-def main():
+def main() -> None:
     args = parse_args()
 
     check_and_convert_dataset(args.dataset)

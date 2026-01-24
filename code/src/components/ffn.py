@@ -11,7 +11,7 @@ class SwiGLUFunction(torch.autograd.Function):
         return swiglu_cuda.fwd(w1_out, w2_out)
 
     @staticmethod
-    def backward(ctx: Any, grad_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def backward(ctx: Any, grad_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]: # type: ignore
         w1_out, w2_out = ctx.saved_tensors
         grad_w1, grad_w2 = swiglu_cuda.bwd(grad_out.contiguous(), w1_out, w2_out)
         return grad_w1, grad_w2

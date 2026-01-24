@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from pathlib import Path
 from typing import Optional, Any
 
@@ -9,17 +10,6 @@ def load_graph_embeddings(
     expected_num_items: Optional[int] = None,
     expected_dim: Optional[int] = None,
 ) -> torch.Tensor:
-    """
-    Load pretrained graph embeddings from file.
-    
-    Args:
-        embedding_path: Path to saved embeddings (.pt file)
-        expected_num_items: Expected number of items (for validation)
-        expected_dim: Expected embedding dimension (for validation)
-        
-    Returns:
-        Embeddings tensor [num_items+1, embedding_dim]
-    """
     if not Path(embedding_path).exists():
         raise FileNotFoundError(f"Graph embeddings not found at {embedding_path}")
     
@@ -29,14 +19,10 @@ def load_graph_embeddings(
     embedding_dim = checkpoint['embedding_dim']
     
     if expected_num_items is not None and num_items != expected_num_items:
-        raise ValueError(
-            f"Embedding num_items mismatch: expected {expected_num_items}, got {num_items}"
-        )
+        raise ValueError(f"Embedding num_items mismatch: expected {expected_num_items}, got {num_items}")
     
     if expected_dim is not None and embedding_dim != expected_dim:
-        raise ValueError(
-            f"Embedding dimension mismatch: expected {expected_dim}, got {embedding_dim}"
-        )
+        raise ValueError(f"Embedding dimension mismatch: expected {expected_dim}, got {embedding_dim}")
     
     print(f"Loaded graph embeddings: {embeddings.shape}")
     return embeddings
@@ -48,17 +34,9 @@ def initialize_sasrec_with_graph_embeddings(
     freeze_embeddings: bool = False,
     scale_factor: float = 1.0,
 ) -> None:
-    """
-    Initialize SASRec item embeddings with pretrained graph embeddings.
-    
-    Args:
-        sasrec_model: SASRec model instance
-        graph_embedding_path: Path to pretrained graph embeddings
-        freeze_embeddings: Whether to freeze embeddings during training
-        scale_factor: Scale factor for embeddings (default: 1.0)
-    """
-    num_items = sasrec_model.item_num
-    embedding_dim = sasrec_model.item_emb.embedding_dim
+    num_items: int = getattr(sasrec_model, 'item_num')
+    item_emb: nn.Embedding = getattr(sasrec_model, 'item_emb')
+    embedding_dim: int = int(item_emb.embedding_dim)
     
     graph_embeddings = load_graph_embeddings(
         graph_embedding_path,
@@ -67,14 +45,14 @@ def initialize_sasrec_with_graph_embeddings(
     )
     
     with torch.no_grad():
-        sasrec_model.item_emb.weight.data.copy_(graph_embeddings * scale_factor)
-        sasrec_model.item_emb.weight.data[0, :] = 0
+        item_emb.weight.data.copy_(graph_embeddings * scale_factor)
+        item_emb.weight.data[0, :] = 0
     
     if freeze_embeddings:
-        sasrec_model.item_emb.weight.requires_grad = False
-        print("Item embeddings frozen (will not be updated during training)")
+        item_emb.weight.requires_grad = False
+        print("Item embeddings frozen")
     else:
-        print("Item embeddings initialized from graph (will be fine-tuned)")
+        print("Item embeddings initialized from graph")
     
     print(f"✓ SASRec initialized with graph embeddings (scale={scale_factor})")
 
@@ -87,27 +65,13 @@ def create_sasrec_with_graph_init(
     freeze_embeddings: bool = False,
     scale_factor: float = 1.0,
 ) -> nn.Module:
-    """
-    Create SASRec model with optional graph embedding initialization.
-    
-    Args:
-        user_num: Number of users
-        item_num: Number of items
-        args: Arguments object with model hyperparameters
-        graph_embedding_path: Path to pretrained graph embeddings (optional)
-        freeze_embeddings: Whether to freeze embeddings
-        scale_factor: Scale factor for graph embeddings (0.0-1.0)
-        
-    Returns:
-        SASRec model instance
-    """
     from model import SASRec
     
     model = SASRec(user_num, item_num, args).to(args.device)
     
     for name, param in model.named_parameters():
         try:
-            torch.nn.init.xavier_normal_(param.data)
+            nn.init.xavier_normal_(param.data)
         except Exception:
             pass
     
@@ -120,16 +84,13 @@ def create_sasrec_with_graph_init(
         )
     else:
         model.item_emb.weight.data[0, :] = 0
-        print("SASRec initialized with random embeddings (no graph init)")
+        print("SASRec initialized with random embeddings")
     
     return model
 
 
 class GraphEnhancedSASRec(nn.Module):
-    """
-    SASRec with graph-enhanced item embeddings.
-    Combines learned embeddings with graph embeddings.
-    """
+    graph_embeddings: torch.Tensor
     
     def __init__(
         self,
@@ -137,37 +98,36 @@ class GraphEnhancedSASRec(nn.Module):
         graph_embedding_path: str,
         fusion_mode: str = "add",
         fusion_weight: float = 0.5,
-    ):
-        super(GraphEnhancedSASRec, self).__init__()
+    ) -> None:
+        super().__init__()
         self.sasrec = sasrec_model
         self.fusion_mode = fusion_mode
         self.fusion_weight = fusion_weight
         
+        item_num = getattr(sasrec_model, 'item_num')
+        item_emb: nn.Embedding = getattr(sasrec_model, 'item_emb')
+        emb_dim = int(item_emb.embedding_dim)
+        
         graph_embeddings = load_graph_embeddings(
             graph_embedding_path,
-            expected_num_items=sasrec_model.item_num,
-            expected_dim=sasrec_model.item_emb.embedding_dim,
+            expected_num_items=item_num,
+            expected_dim=emb_dim,
         )
         
         self.register_buffer('graph_embeddings', graph_embeddings)
         
         if fusion_mode == "gate":
-            self.fusion_gate = nn.Linear(
-                sasrec_model.item_emb.embedding_dim * 2,
-                sasrec_model.item_emb.embedding_dim
-            )
+            self.fusion_gate = nn.Linear(emb_dim * 2, emb_dim)
         
         print(f"GraphEnhancedSASRec: fusion_mode={fusion_mode}, weight={fusion_weight}")
     
     def get_fused_embeddings(self, item_ids: torch.Tensor) -> torch.Tensor:
-        """Fuse learned and graph embeddings."""
-        learned_emb = self.sasrec.item_emb(item_ids)
+        item_emb: nn.Embedding = getattr(self.sasrec, 'item_emb')
+        learned_emb = item_emb(item_ids)
         graph_emb = self.graph_embeddings[item_ids].to(learned_emb.device)
         
         if self.fusion_mode == "add":
             return learned_emb + self.fusion_weight * graph_emb
-        elif self.fusion_mode == "concat":
-            raise NotImplementedError("Concat fusion requires dimension adjustment")
         elif self.fusion_mode == "gate":
             concat = torch.cat([learned_emb, graph_emb], dim=-1)
             gate = torch.sigmoid(self.fusion_gate(concat))
@@ -176,40 +136,47 @@ class GraphEnhancedSASRec(nn.Module):
             return learned_emb
     
     def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs):
-        """Forward pass with fused embeddings."""
-        original_item_emb = self.sasrec.item_emb
+        item_emb: nn.Embedding = getattr(self.sasrec, 'item_emb')
+        original_emb = item_emb
+        emb_dim = int(item_emb.embedding_dim)
         
         class FusedEmbedding(nn.Module):
-            def __init__(self, parent):
+            def __init__(self, parent: 'GraphEnhancedSASRec', dim: int) -> None:
                 super().__init__()
                 self.parent = parent
-                self.embedding_dim = original_item_emb.embedding_dim
+                self.embedding_dim = dim
             
-            def forward(self, item_ids):
+            def forward(self, item_ids: torch.Tensor) -> torch.Tensor:
                 return self.parent.get_fused_embeddings(item_ids)
         
-        self.sasrec.item_emb = FusedEmbedding(self)
+        setattr(self.sasrec, 'item_emb', FusedEmbedding(self, emb_dim))
         output = self.sasrec(user_ids, log_seqs, pos_seqs, neg_seqs)
-        self.sasrec.item_emb = original_item_emb
+        setattr(self.sasrec, 'item_emb', original_emb)
         
         return output
     
     def predict(self, user_ids, log_seqs, item_indices):
-        """Prediction with fused embeddings."""
-        original_item_emb = self.sasrec.item_emb
+        item_emb: nn.Embedding = getattr(self.sasrec, 'item_emb')
+        original_emb = item_emb
+        emb_dim = int(item_emb.embedding_dim)
         
         class FusedEmbedding(nn.Module):
-            def __init__(self, parent):
+            def __init__(self, parent: 'GraphEnhancedSASRec', dim: int) -> None:
                 super().__init__()
                 self.parent = parent
-                self.embedding_dim = original_item_emb.embedding_dim
+                self.embedding_dim = dim
             
-            def forward(self, item_ids):
+            def forward(self, item_ids: torch.Tensor) -> torch.Tensor:
                 return self.parent.get_fused_embeddings(item_ids)
         
-        self.sasrec.item_emb = FusedEmbedding(self)
-        output = self.sasrec.predict(user_ids, log_seqs, item_indices)
-        self.sasrec.item_emb = original_item_emb
+        setattr(self.sasrec, 'item_emb', FusedEmbedding(self, emb_dim))
+        
+        if hasattr(self.sasrec, 'predict'):
+            output = getattr(self.sasrec, 'predict')(user_ids, log_seqs, item_indices)
+        else:
+            raise AttributeError("sasrec has no predict method")
+        
+        setattr(self.sasrec, 'item_emb', original_emb)
         
         return output
 
@@ -219,16 +186,6 @@ def compare_embeddings(
     graph_embedding_path: str,
     num_samples: int = 100,
 ) -> None:
-    """
-    Compare random vs graph embeddings quality.
-    
-    Args:
-        random_embedding_path: Path to randomly initialized embeddings
-        graph_embedding_path: Path to graph embeddings
-        num_samples: Number of items to sample for comparison
-    """
-    import numpy as np
-    
     random_emb = torch.load(random_embedding_path, map_location='cpu')['embeddings']
     graph_emb = torch.load(graph_embedding_path, map_location='cpu')['embeddings']
     

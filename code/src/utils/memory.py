@@ -21,19 +21,19 @@ class ContinuumItemEmbedding(nn.Module):
         medium_weight: float = 0.3,
         slow_weight: float = 0.2,
         device: torch.device = torch.device('cuda')
-    ):
+    ) -> None:
         super(ContinuumItemEmbedding, self).__init__()
         
-        self.num_items = num_items
-        self.embedding_dim = embedding_dim
-        self.padding_idx = padding_idx
-        self.device = device
+        self.num_items: int = num_items
+        self.embedding_dim: int = embedding_dim
+        self.padding_idx: int = padding_idx
+        self.device: torch.device = device
         self.to(device)
         
         # 3-level embeddings
-        self.fast_emb = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
-        self.medium_emb = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
-        self.slow_emb = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
+        self.fast_emb: nn.Embedding = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
+        self.medium_emb: nn.Embedding = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
+        self.slow_emb: nn.Embedding = nn.Embedding(num_items, embedding_dim, padding_idx=padding_idx).to(device)
         
         # Adaptive weights for combining embeddings
         self.register_buffer('fast_weight', torch.tensor(fast_weight, device=device))
@@ -43,7 +43,7 @@ class ContinuumItemEmbedding(nn.Module):
         # Initialize all embeddings with same values
         self._init_weights()
     
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         """Initialize all embeddings with Xavier uniform"""
         nn.init.xavier_uniform_(self.fast_emb.weight)
         nn.init.xavier_uniform_(self.medium_emb.weight)
@@ -56,7 +56,7 @@ class ContinuumItemEmbedding(nn.Module):
                 self.medium_emb.weight[self.padding_idx].fill_(0)
                 self.slow_emb.weight[self.padding_idx].fill_(0)
     
-    def init_from_pretrained(self, pretrained_embeddings: torch.Tensor):
+    def init_from_pretrained(self, pretrained_embeddings: torch.Tensor) -> None:
         """
         Initialize slow memory from pretrained graph embeddings.
         Fast and medium memories are initialized randomly.
@@ -150,7 +150,7 @@ class ContinuumSASRec(nn.Module):
     Wrapper that replaces standard item embeddings with CMS.
     """
     
-    def __init__(self, base_model: nn.Module, use_cms: bool = True):
+    def __init__(self, base_model: nn.Module, use_cms: bool = True) -> None:
         super(ContinuumSASRec, self).__init__()
         
         self.base_model = base_model
@@ -161,10 +161,10 @@ class ContinuumSASRec(nn.Module):
             original_emb = base_model.item_emb
             
             self.cms_emb = ContinuumItemEmbedding(
-                num_items=original_emb.num_embeddings,
-                embedding_dim=original_emb.embedding_dim,
-                padding_idx=original_emb.padding_idx,
-                device=base_model.dev
+                num_items=int(original_emb.num_embeddings),
+                embedding_dim=int(original_emb.embedding_dim),
+                padding_idx=int(original_emb.padding_idx) if original_emb.padding_idx is not None else 0,
+                device=torch.device(base_model.dev) if isinstance(base_model.dev, str) else base_model.dev
             )
             
             # Copy original weights to all levels

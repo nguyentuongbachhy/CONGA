@@ -4,8 +4,8 @@ from typing import Any, Tuple
 
 import torch
 
-from model import SASRec
-from utils import (
+from models.model import SASRec
+from utils.common import (
     check_and_convert_dataset,
     load_metadata,
     data_partition,

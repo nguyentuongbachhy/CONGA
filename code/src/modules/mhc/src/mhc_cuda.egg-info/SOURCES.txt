@@ -1,9 +1,0 @@
-pyproject.toml
-setup.py
-src/binding.cu
-src/kernel.cu
-src/mhc_cuda.egg-info/PKG-INFO
-src/mhc_cuda.egg-info/SOURCES.txt
-src/mhc_cuda.egg-info/dependency_links.txt
-src/mhc_cuda.egg-info/requires.txt
-src/mhc_cuda.egg-info/top_level.txt

@@ -76,7 +76,13 @@ venv.bak/
 # Project specific
 data/raw/
 data/
-code\src\data
+code/src/data/*.txt
+
+# Training outputs
+*_*_baseline/
+*_run/
+*_train/
+*_test/
 
 # Experiments
 experiments/
@@ -99,7 +105,7 @@ wandb/
 .DS_Store
 Thumbs.db
 
-pattern_mining/
+# Pattern mining and tuning outputs
 tuning/
 pretrained_embeddings/
 benchmark/

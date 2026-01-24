@@ -2,7 +2,7 @@ import polars as pl
 import numpy as np
 import os
 
-def convert_to_bin(dataset_name: str):
+def convert_to_bin(dataset_name: str, neg_pool_size: int = 10000) -> None:
     data_path = f'data/{dataset_name}.txt'
     bin_dir = f'bins/{dataset_name}_bin'
     os.makedirs(bin_dir, exist_ok=True)
@@ -33,11 +33,23 @@ def convert_to_bin(dataset_name: str):
     user_index[unique_uids, 0] = offsets
     user_index[unique_uids, 1] = lengths
     
-    itemnum = df['iid'].max()
-    usernum = max_user
+    itemnum = int(df['iid'].max())
+    usernum = int(max_user)
+    
+    print(f"Generating negative samples pool (size={neg_pool_size} per user)...")
+    neg_pool = np.zeros((max_user + 1, neg_pool_size), dtype=np.int32)
+    for uid in unique_uids:
+        offset, length = user_index[uid]
+        user_items = set(all_items[offset:offset + length])
+        valid_items = np.array([i for i in range(1, itemnum + 1) if i not in user_items], dtype=np.int32)
+        if len(valid_items) >= neg_pool_size:
+            neg_pool[uid] = np.random.choice(valid_items, size=neg_pool_size, replace=False)
+        else:
+            neg_pool[uid] = np.random.choice(valid_items, size=neg_pool_size, replace=True)
     
     np.save(f'{bin_dir}/all_items.npy', all_items)
     np.save(f'{bin_dir}/user_index.npy', user_index)
+    np.save(f'{bin_dir}/neg_pool.npy', neg_pool)
     
     with open(f'{bin_dir}/meta.txt', 'w') as f:
         f.write(f'{usernum},{itemnum}')

@@ -1,17 +1,8 @@
-"""
-Pattern-based utilities for improving sequential recommendation training
-
-Three main approaches:
-1. Pattern-aware Initialization - Initialize embeddings from co-occurrence patterns
-2. Pattern Regularization - Add pattern consistency loss
-3. Pattern-guided Negative Sampling - Sample negatives based on patterns
-"""
-
 import pickle
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import List, Tuple, Dict, Set
+from typing import List
 from collections import defaultdict
 
 
@@ -23,7 +14,7 @@ class PatternAwareInitializer:
     This provides better initialization than random.
     """
     
-    def __init__(self, pattern_file: str):
+    def __init__(self, pattern_file: str) -> None:
         """
         Args:
             pattern_file: Path to patterns.pkl file
@@ -45,7 +36,7 @@ class PatternAwareInitializer:
         print(f"  Loaded {len(self.patterns)} patterns")
         print(f"  Co-occurrence pairs: {sum(len(v) for v in self.cooccurrence.values())}")
     
-    def initialize_embeddings(self, item_emb: nn.Embedding, alpha: float = 0.3):
+    def initialize_embeddings(self, item_emb: nn.Embedding, alpha: float = 0.3) -> None:
         """
         Initialize embeddings to reflect co-occurrence patterns
         
@@ -96,7 +87,7 @@ class PatternRegularizer:
     Items in frequent patterns should have similar embeddings.
     """
     
-    def __init__(self, pattern_file: str, top_k: int = 500):
+    def __init__(self, pattern_file: str, top_k: int = 500) -> None:
         """
         Args:
             pattern_file: Path to patterns.pkl file
@@ -157,7 +148,7 @@ class PatternRegularizer:
             total_weight += weight
         
         if total_weight > 0:
-            return total_loss / total_weight
+            return torch.tensor(total_loss / total_weight, device=device)
         else:
             return torch.tensor(0.0, device=device)
 
@@ -172,7 +163,7 @@ class PatternGuidedNegativeSampler:
                         (hard negatives that are semantically related)
     """
     
-    def __init__(self, pattern_file: str, num_items: int):
+    def __init__(self, pattern_file: str, num_items: int) -> None:
         """
         Args:
             pattern_file: Path to patterns.pkl file
@@ -243,13 +234,13 @@ class PatternGuidedNegativeSampler:
         return negatives[:num_negatives]
 
 
-def load_patterns(pattern_file: str):
+def load_patterns(pattern_file: str) -> dict:
     """Load patterns from file"""
     with open(pattern_file, 'rb') as f:
         return pickle.load(f)
 
 
-def print_pattern_stats(pattern_file: str):
+def print_pattern_stats(pattern_file: str) -> None:
     """Print statistics about patterns"""
     data = load_patterns(pattern_file)
     

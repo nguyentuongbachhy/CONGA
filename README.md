@@ -43,13 +43,7 @@ CONGA combines:
 
 ## Models
 
-| Model | Description | Entry |
-|------|-------------|-------|
-| `sasrec` | Self-attentive sequential recommender | `src/models/sasrec.py` |
-| `cl4srec` | Contrastive sequential recommendation | `src/models/cl4srec.py` |
-| `gcl4sr` | Graph contrastive sequential recommendation | `src/models/gcl4sr.py` |
-| `conga` | CONGA v1 (nested graph + contrastive) | `src/models/conga.py` |
-| `conga_v2` | CONGA v2 (enhanced, optional continual learning) | `src/models/conga_v2.py` |
+CONGA is a sequential recommendation system based on SASRec with extensions for graph-based learning, pattern mining, and continual learning capabilities.
 
 ---
 
@@ -57,31 +51,54 @@ CONGA combines:
 
 ```
 CONGA/
-├── configs/
-│   ├── sasrec.yaml
-│   ├── cl4srec.yaml
-│   ├── gcl4sr.yaml
-│   ├── conga.yaml
-│   ├── conga_v2.yaml
-│   └── conga_v2_fixed.yaml
-├── data/
-│   └── ml-1m.txt
-├── scripts/
-│   ├── train.py
-│   └── evaluate.py
-├── src/
-│   ├── data/
-│   │   ├── dataset.py
-│   │   └── lazy_dataset.py
-│   ├── models/
-│   ├── trainers/
-│   └── utils/
-└── tests/
+├── code/
+│   ├── notebooks/
+│   │   └── kaggle_sasrec_training.ipynb
+│   ├── refs/                      # Reference implementations
+│   │   ├── DuoRec/
+│   │   └── SASRec.pytorch/
+│   └── src/
+│       ├── main.py                # Main training entry point
+│       ├── models/                # Model implementations
+│       │   ├── __init__.py
+│       │   ├── model.py           # SASRec model
+│       │   ├── graph_model.py     # Graph model
+│       │   ├── graph_teacher.py   # Graph teacher (LightGCN)
+│       │   ├── continuum_memory.py # Continual learning memory
+│       │   └── sasrec_integration.py # Graph-SASRec integration
+│       ├── components/            # Model components
+│       │   ├── encoder.py
+│       │   ├── ffn.py
+│       │   ├── mhc.py
+│       │   └── rope.py
+│       ├── utils/                 # Utilities
+│       │   ├── __init__.py
+│       │   ├── common.py          # Common utilities
+│       │   ├── evaluation.py      # Evaluation functions
+│       │   ├── preprocessing.py   # Data preprocessing
+│       │   └── memory.py          # Memory utilities
+│       ├── training/              # Training scripts
+│       │   ├── train_sasrec_with_graph.py
+│       │   ├── train_with_patterns.py
+│       │   └── train_teacher.py
+│       ├── experiments/           # Benchmarking & tuning
+│       │   ├── benchmark_configs.py
+│       │   ├── run_benchmark.py
+│       │   ├── run_tuning.py
+│       │   └── tune_hyperparams.py
+│       ├── pattern_mining/        # Pattern mining
+│       │   ├── graph_pattern_miner.py
+│       │   ├── mine_patterns.py
+│       │   └── pattern_utils.py
+│       ├── modules/               # CUDA modules (DO NOT MODIFY)
+│       │   ├── mhc/
+│       │   ├── rope/
+│       │   └── swiglu/
+│       ├── data/                  # Dataset files
+│       └── bins/                  # Preprocessed data
+├── papers/                        # Research papers
+└── requirements.txt
 ```
-
-> [!NOTE]
-> Folder layout in the repository may include additional experimental code and third-party baselines.
-> The commands in this README assume you run from the repo root.
 
 ---
 
@@ -110,10 +127,13 @@ pip install -r requirements.txt
 
 ## Dataset Preparation
 
-This repo expects sequential interaction data at:
+Datasets should be in sequential interaction format at `code/src/data/`:
 
 ```
-data/ml-1m.txt
+code/src/data/ml-1m.txt
+code/src/data/Beauty.txt
+code/src/data/Steam.txt
+code/src/data/Video.txt
 ```
 
 Format per line:
@@ -122,61 +142,107 @@ Format per line:
 <user_id> <item_id>
 ```
 
+The preprocessing script will convert raw data to binary format in `code/src/bins/`.
+
 ---
 
 ## Training
 
-Train a model using a YAML config:
+### Basic Training
+
+Train SASRec model:
 
 ```bash
-python scripts/train.py --config configs/conga.yaml --dataset ml-1m
+cd code/src
+python main.py --dataset ml-1m --train_dir ml-1m_run --batch_size 128 --lr 0.001 --maxlen 200 --hidden_units 50 --num_blocks 2 --num_epochs 200 --num_heads 1 --dropout_rate 0.2 --device cuda
 ```
 
-Example (CPU + small batch):
+### Training with Graph Initialization
+
+First train graph teacher model:
 
 ```bash
-python scripts/train.py --config configs/conga_v2_fixed.yaml --dataset ml-1m --device cpu --batch_size 32 --epochs 100
+cd code/src
+python training/train_teacher.py --dataset ml-1m --embedding_dim 50 --num_layers 3 --num_epochs 100 --device cuda
 ```
 
-> [!NOTE]
-> When running on CPU, AMP is automatically disabled in the trainer.
+Then train SASRec with graph embeddings:
+
+```bash
+cd code/src
+python training/train_sasrec_with_graph.py --dataset ml-1m --graph_embedding_path pretrained_embeddings/ml-1m_graph_embeddings.pt --batch_size 128 --device cuda
+```
+
+### Pattern Mining
+
+Mine patterns first:
+
+```bash
+cd code/src
+python -m pattern_mining.mine_patterns --dataset ml-1m --output_file pattern_data/ml-1m_patterns.pkl
+```
+
+Then train with patterns:
+
+```bash
+cd code/src
+python training/train_with_patterns.py --dataset ml-1m --pattern_file pattern_data/ml-1m_patterns.pkl --use_pattern_init --use_pattern_reg --device cuda
+```
+
+### Hyperparameter Tuning
+
+Run automated hyperparameter search:
+
+```bash
+cd code/src
+python experiments/tune_hyperparams.py --dataset ml-1m --n_trials 50 --device cuda
+```
+
+### Benchmarking
+
+Run benchmarks with different configurations:
+
+```bash
+cd code/src
+python experiments/benchmark_configs.py --dataset ml-1m --pattern_file pattern_data/ml-1m_patterns.pkl --graph_emb_file pretrained_embeddings/ml-1m_graph_embeddings.pt
+```
 
 ---
 
 ## Evaluation
 
-Evaluate a saved checkpoint:
+Evaluate a trained checkpoint:
 
 ```bash
-python scripts/evaluate.py \
-  --checkpoint experiments/checkpoints/conga_v2_fixed/best_model.pt \
-  --dataset ml-1m \
-  --model conga_v2 \
-  --device cpu \
-  --max_seq_len 50 \
-  --hidden_size 64 \
-  --num_layers 2 \
-  --num_heads 2 \
-  --dropout_rate 0.3
+cd code/src
+python eval.py --dataset ml-1m --checkpoint <path_to_checkpoint> --device cuda
+```
+
+Example:
+
+```bash
+cd code/src
+python eval.py --dataset ml-1m --checkpoint ml-1m_run/SASRec.epoch=200.pth --hidden_units 50 --num_blocks 2 --num_heads 1 --maxlen 200 --device cuda
 ```
 
 > [!IMPORTANT]
-> `scripts/evaluate.py` prefers dataset-provided `neg_items` during evaluation.
-> This avoids false negatives/positives introduced by random sampling.
+> Evaluation uses dataset-provided negative items to avoid false negatives/positives.
 
 ---
 
 ## Results
 
-Evaluated on **MovieLens-1M** (`ml-1m`) with corrected evaluation protocol (100 negatives per user, excluding user history):
+Performance on **MovieLens-1M** with corrected evaluation protocol (100 negatives per user):
 
-| Model | Checkpoint | NDCG@10 | HR@10 |
-|------|------------|---------|-------|
-| `conga` | `experiments/checkpoints/conga/best_model.pt` | **0.5313** | **0.7690** |
-| `conga_v2` (`conga_v2_fixed`) | `experiments/checkpoints/conga_v2_fixed/best_model.pt` | **0.5369** | **0.7714** |
+| Configuration | NDCG@10 | HR@10 |
+|--------------|---------|-------|
+| SASRec Baseline | - | - |
+| + Graph Init | - | - |
+| + Pattern Mining | - | - |
+| + Continual Learning | - | - |
 
 > [!NOTE]
-> These numbers are from `scripts/evaluate.py` with evaluation negatives provided by the dataset.
+> Results will be updated after running experiments with the cleaned codebase.
 
 ---
 

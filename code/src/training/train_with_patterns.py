@@ -1,15 +1,3 @@
-"""
-Training script with pattern-based improvements
-
-Three approaches to use patterns:
-1. Pattern-aware Initialization - Better starting point
-2. Pattern Regularization - Encourage pattern consistency
-3. Pattern-guided Negative Sampling - Harder negatives
-
-Usage:
-    python train_with_patterns.py --dataset ml-1m --pattern_file pattern_data/ml-1m_patterns.pkl
-"""
-
 import os
 import time
 import torch
@@ -17,8 +5,8 @@ import argparse
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from model import SASRec
-from pattern_utils import (
+from models.model import SASRec
+from pattern_mining.pattern_utils import (
     PatternAwareInitializer,
     PatternRegularizer,
     print_pattern_stats
@@ -39,7 +27,7 @@ def str2bool(s: str) -> bool:
     return s == 'true'
 
 
-def train_with_patterns(args):
+def train_with_patterns(args) -> None:
     """
     Train SASRec with pattern-based improvements
     """

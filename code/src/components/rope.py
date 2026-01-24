@@ -48,7 +48,7 @@ class RoPEFunction(torch.autograd.Function):
         return q_out, k_out
 
     @staticmethod
-    def backward(ctx: Any, grad_q: torch.Tensor, grad_k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None]:
+    def backward(ctx: Any, grad_q: torch.Tensor, grad_k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, None, None]: # type: ignore
         cos, sin = ctx.saved_tensors
         dq, dk = rope_cuda.bwd(grad_q.contiguous(), grad_k.contiguous(), cos, sin)
         return dq, dk, None, None

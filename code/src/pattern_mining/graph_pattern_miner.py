@@ -1,43 +1,13 @@
-"""
-Fast Graph-based Pattern Mining for Sequential Recommendation
-Optimized for speed with top-k pattern extraction
-
-Key features:
-- O(N*W) complexity where W is window size
-- Priority queue for top-k patterns
-- Progress tracking with tqdm
-- 10-100x faster than FP-Tree
-"""
-
 from typing import List, Tuple, Dict, Set
 from collections import defaultdict, Counter
-import numpy as np
 from tqdm import tqdm
 import heapq
 
 
 class GraphPatternMiner:
-    """
-    Fast graph-based pattern miner using co-occurrence and top-k optimization
-    
-    Algorithm:
-    1. Build item co-occurrence graph with sliding window
-    2. Extract frequent single items
-    3. Extract frequent pairs from graph edges
-    4. Extend to longer patterns using graph traversal
-    5. Use priority queue to keep only top-k patterns
-    
-    Args:
-        min_support: Minimum support threshold (ratio)
-        window: Co-occurrence window size
-        max_pattern_length: Maximum pattern length
-        min_pattern_length: Minimum pattern length
-        top_k: Number of top patterns to keep
-    """
-    
     def __init__(self, min_support: float = 0.01, window: int = 5,
                  max_pattern_length: int = 5, min_pattern_length: int = 2,
-                 top_k: int = 1000):
+                 top_k: int = 1000) -> None:
         self.min_support = min_support
         self.window = window
         self.max_pattern_length = max_pattern_length
@@ -45,20 +15,10 @@ class GraphPatternMiner:
         self.top_k = top_k
         self.patterns = []
         
-        # Graph: item -> {neighbor: count}
         self.graph = defaultdict(lambda: defaultdict(int))
         self.item_counts = Counter()
         
     def mine_patterns(self, sequences: List[List[int]]) -> List[Tuple[Tuple[int, ...], int]]:
-        """
-        Mine top-k patterns from sequences
-        
-        Args:
-            sequences: List of item sequences
-            
-        Returns:
-            List of (pattern, support) tuples sorted by support
-        """
         total_sequences = len(sequences)
         min_support_count = max(1, int(self.min_support * total_sequences))
         
@@ -81,9 +41,8 @@ class GraphPatternMiner:
         
         return self.patterns
     
-    def _build_graph(self, sequences: List[List[int]], min_support_count: int):
-        """Build co-occurrence graph with progress bar"""
-        print(f"\n  📊 Building co-occurrence graph...")
+    def _build_graph(self, sequences: List[List[int]], min_support_count: int) -> None:
+        print(f"\n  Building co-occurrence graph...")
         
         # Count items and build edges
         for seq in tqdm(sequences, desc="  Processing sequences", 
@@ -128,9 +87,8 @@ class GraphPatternMiner:
         
         print(f"  ✓ Graph built: {num_nodes:,} nodes, {num_edges:,} edges")
     
-    def _extract_patterns(self, min_support_count: int, total_sequences: int):
-        """Extract patterns from graph"""
-        print(f"\n  🎯 Extracting patterns...")
+    def _extract_patterns(self, min_support_count: int, total_sequences: int) -> None:
+        print(f"\n  Extracting patterns...")
         self.patterns = []
         
         # Length 1: Single items
@@ -158,9 +116,8 @@ class GraphPatternMiner:
         
         print(f"  ✓ Extracted {len(self.patterns)} patterns")
     
-    def _extract_longer_patterns(self, min_support_count: int):
-        """Extract patterns of length 3+ using graph traversal with priority queue"""
-        print(f"  🔍 Mining longer patterns (length 3+)...")
+    def _extract_longer_patterns(self, min_support_count: int) -> None:
+        print(f"  Mining longer patterns (length 3+)...")
         
         # Priority queue: (-support, pattern)
         pq = []
@@ -200,7 +157,7 @@ class GraphPatternMiner:
     
     def _extend_pattern_bfs(self, current_pattern: Tuple[int, ...],
                            current_support: int, min_support_count: int,
-                           visited: Set, pq: List):
+                           visited: Set, pq: List) -> None:
         """Extend pattern using BFS"""
         if len(current_pattern) >= self.max_pattern_length:
             return

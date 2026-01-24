@@ -1,7 +1,3 @@
-"""
-Pattern mining script using fast graph-based approach
-"""
-
 import argparse
 import time
 import pickle
@@ -13,7 +9,7 @@ from utils import data_partition
 def mine_patterns_from_dataset(dataset_name: str, min_support: float = 0.01, 
                                max_pattern_length: int = 5, min_pattern_length: int = 2,
                                top_k: int = 1000, output_dir: str = 'pattern_data',
-                               window: int = 5):
+                               window: int = 5) -> list:
     """
     Mine patterns from dataset using fast graph-based approach
     

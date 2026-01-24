@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-import numpy as np
 from typing import Tuple, Dict, List
-import scipy.sparse as sp
 
 
 class LightGCN(nn.Module):
@@ -35,43 +33,63 @@ class LightGCN(nn.Module):
         n_users = self.num_users + 1
         n_items = self.num_items + 1
 
-        row, col, data = [], [], []
+        user_indices = []
+        item_indices = []
+        
         for user_id, items in user_train.items():
             if user_id == 0:
                 continue
             for item_id in items:
                 if item_id == 0:
                     continue
-                row.append(user_id)
-                col.append(item_id)
-                data.append(1.0)
+                user_indices.append(user_id)
+                item_indices.append(item_id)
 
-        R = sp.coo_matrix(
-            (data, (row, col)), shape=(n_users, n_items), dtype=np.float32
+        edge_index_user = torch.LongTensor(user_indices).to(self.device)
+        edge_index_item = torch.LongTensor(item_indices).to(self.device)
+        edge_values = torch.ones(len(user_indices), dtype=torch.float32).to(self.device)
+
+        # adj_mat = [[0, R], [R^T, 0]]
+        total_nodes = n_users + n_items
+        
+        # Top-right block: user -> item
+        row_top = edge_index_user
+        col_top = edge_index_item + n_users
+        
+        # Bottom-left block: item -> user
+        row_bottom = edge_index_item + n_users
+        col_bottom = edge_index_user
+        
+        # Combine both directions
+        row = torch.cat([row_top, row_bottom])
+        col = torch.cat([col_top, col_bottom])
+        values = torch.cat([edge_values, edge_values])
+        
+        # Create sparse adjacency matrix
+        indices = torch.stack([row, col], dim=0)
+        adj_mat = torch.sparse_coo_tensor(
+            indices, values, (total_nodes, total_nodes), device=self.device
         )
-
-        adj_mat = sp.dok_matrix(
-            (n_users + n_items, n_users + n_items), dtype=np.float32
+        
+        # Compute degree normalization: D^(-1/2) @ A @ D^(-1/2)
+        adj_mat = adj_mat.coalesce()
+        row_sum = torch.sparse.sum(adj_mat, dim=1).to_dense()
+        
+        # D^(-1/2)
+        d_inv_sqrt = torch.pow(row_sum, -0.5)
+        d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.0
+        
+        # Create D^(-1/2) as diagonal sparse matrix
+        diag_indices = torch.arange(total_nodes, device=self.device).unsqueeze(0).repeat(2, 1)
+        d_mat_inv_sqrt = torch.sparse_coo_tensor(
+            diag_indices, d_inv_sqrt, (total_nodes, total_nodes), device=self.device
         )
-        adj_mat[:n_users, n_users:] = R
-        adj_mat[n_users:, :n_users] = R.T
-        adj_mat = adj_mat.tocoo()
-
-        rowsum = np.array(adj_mat.sum(axis=1)).flatten()
-        d_inv = np.power(rowsum, -0.5)
-        d_inv[np.isinf(d_inv)] = 0.0
-        d_mat = sp.diags(d_inv)
-
-        norm_adj = d_mat @ adj_mat @ d_mat
-        norm_adj = norm_adj.tocoo()
-
-        indices = torch.LongTensor(
-            np.vstack([norm_adj.row, norm_adj.col])
-        ).to(self.device)
-        values = torch.FloatTensor(norm_adj.data).to(self.device)
-        shape = torch.Size(norm_adj.shape)
-
-        return torch.sparse_coo_tensor(indices, values, shape, device=self.device)
+        
+        # Normalize: D^(-1/2) @ A @ D^(-1/2)
+        norm_adj = torch.sparse.mm(d_mat_inv_sqrt, adj_mat)
+        norm_adj = torch.sparse.mm(norm_adj, d_mat_inv_sqrt)
+        
+        return norm_adj.coalesce()
 
     def propagate(self) -> Tuple[torch.Tensor, torch.Tensor]:
         users_emb = self.user_embedding.weight

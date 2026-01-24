@@ -40,7 +40,7 @@ class MHCFusedFunction(torch.autograd.Function):
         return H_pre, H_post, H_res
 
     @staticmethod
-    def backward(ctx: Any, grad_H_pre: torch.Tensor, grad_H_post: torch.Tensor, grad_H_res: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
+    def backward(ctx: Any, grad_H_pre: torch.Tensor, grad_H_post: torch.Tensor, grad_H_res: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]: # type: ignore
         (x_streams, x_norm, proj_weight, rms_weight, 
          H_pre, H_post, proj_output, rstd,
          alpha_pre, alpha_post, alpha_res) = ctx.saved_tensors
