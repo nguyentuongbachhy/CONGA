@@ -6,15 +6,6 @@
 
 #define EPSILON 1e-8f
 #define N 4
-#define WARP_SIZE 32
-
-__device__ __forceinline__ float warpReduceSum(float val) {
-    #pragma unroll
-    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    }
-    return val;
-}
 
 __device__ __forceinline__ void sinkhorn_inplace_N4(float matrix[N][N], int n_iters) {
     #pragma unroll
@@ -122,6 +113,7 @@ __global__ void rms_norm_bwd_kernel(
 
 __global__ void fused_act_sinkhorn_fwd_kernel(
     const float* __restrict__ proj_output,
+    const float* __restrict__ bias,
     float alpha_pre, float alpha_post, float alpha_res,
     int n_iters,
     float* __restrict__ H_pre,
@@ -139,12 +131,14 @@ __global__ void fused_act_sinkhorn_fwd_kernel(
 
     #pragma unroll
     for (int i = 0; i < N; ++i) {
-        H_pre[base_n + i] = 1.0f / (1.0f + __expf(-alpha_pre * proj_output[base_proj + i]));
+        float val = alpha_pre * proj_output[base_proj + i] + bias[i];
+        H_pre[base_n + i] = 1.0f / (1.0f + __expf(-val));
     }
 
     #pragma unroll
     for (int i = 0; i < N; ++i) {
-        H_post[base_n + i] = 2.0f / (1.0f + __expf(-alpha_post * proj_output[base_proj + N + i]));
+        float val = alpha_post * proj_output[base_proj + N + i] + bias[N + i];
+        H_post[base_n + i] = 2.0f / (1.0f + __expf(-val));
     }
 
     float matrix[N][N];
@@ -153,7 +147,7 @@ __global__ void fused_act_sinkhorn_fwd_kernel(
     for (int i = 0; i < N; ++i) {
         #pragma unroll
         for (int j = 0; j < N; ++j) {
-            matrix[i][j] = alpha_res * proj_output[base_proj + res_start + i * N + j];
+            matrix[i][j] = alpha_res * proj_output[base_proj + res_start + i * N + j] + bias[res_start + i * N + j];
         }
     }
 
@@ -173,11 +167,13 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
     const float* __restrict__ grad_H_post,
     const float* __restrict__ grad_H_res,
     const float* __restrict__ proj_output,
+    const float* __restrict__ bias,
     const float* __restrict__ H_pre,
     const float* __restrict__ H_post,
     float alpha_pre, float alpha_post, float alpha_res,
     int n_iters,
     float* __restrict__ grad_proj_output,
+    float* __restrict__ grad_bias,
     float* __restrict__ grad_alpha_pre,
     float* __restrict__ grad_alpha_post,
     float* __restrict__ grad_alpha_res,
@@ -200,8 +196,10 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
         float h = H_pre[base_n + i];
         float g = grad_H_pre[base_n + i];
         float dsig = h * (1.0f - h);
-        grad_proj_output[base_proj + i] = g * dsig * alpha_pre;
-        local_g_alpha_pre += g * dsig * proj_output[base_proj + i];
+        float grad_val = g * dsig;
+        grad_proj_output[base_proj + i] = grad_val * alpha_pre;
+        atomicAdd(&grad_bias[i], grad_val);
+        local_g_alpha_pre += grad_val * proj_output[base_proj + i];
     }
 
     #pragma unroll
@@ -209,8 +207,10 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
         float h = H_post[base_n + i] * 0.5f;
         float g = grad_H_post[base_n + i];
         float dsig = h * (1.0f - h);
-        grad_proj_output[base_proj + N + i] = g * 2.0f * dsig * alpha_post;
-        local_g_alpha_post += g * 2.0f * dsig * proj_output[base_proj + N + i];
+        float grad_val = g * 2.0f * dsig;
+        grad_proj_output[base_proj + N + i] = grad_val * alpha_post;
+        atomicAdd(&grad_bias[N + i], grad_val);
+        local_g_alpha_post += grad_val * proj_output[base_proj + N + i];
     }
 
     float matrix[N][N];
@@ -219,9 +219,10 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
     for (int i = 0; i < N; ++i) {
         #pragma unroll
         for (int j = 0; j < N; ++j) {
-            matrix[i][j] = alpha_res * proj_output[base_proj + res_start + i * N + j];
+            matrix[i][j] = alpha_res * proj_output[base_proj + res_start + i * N + j] + bias[res_start + i * N + j];
         }
     }
+
     sinkhorn_inplace_N4(matrix, n_iters);
 
     float grad_matrix[N][N];
@@ -235,18 +236,18 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
 
     for (int iter = n_iters - 1; iter >= 0; --iter) {
         #pragma unroll
-        for (int j = 0; j < N; ++j) {
-            float sum_g = grad_matrix[0][j] + grad_matrix[1][j] + grad_matrix[2][j] + grad_matrix[3][j];
-            #pragma unroll
-            for (int i = 0; i < N; ++i) {
-                grad_matrix[i][j] -= __expf(matrix[i][j]) * sum_g;
-            }
-        }
-        #pragma unroll
         for (int i = 0; i < N; ++i) {
             float sum_g = grad_matrix[i][0] + grad_matrix[i][1] + grad_matrix[i][2] + grad_matrix[i][3];
             #pragma unroll
             for (int j = 0; j < N; ++j) {
+                grad_matrix[i][j] -= __expf(matrix[i][j]) * sum_g;
+            }
+        }
+        #pragma unroll
+        for (int j = 0; j < N; ++j) {
+            float sum_g = grad_matrix[0][j] + grad_matrix[1][j] + grad_matrix[2][j] + grad_matrix[3][j];
+            #pragma unroll
+            for (int i = 0; i < N; ++i) {
                 grad_matrix[i][j] -= __expf(matrix[i][j]) * sum_g;
             }
         }
@@ -258,6 +259,7 @@ __global__ void fused_act_sinkhorn_bwd_kernel(
         for (int j = 0; j < N; ++j) {
             float val = grad_matrix[i][j];
             grad_proj_output[base_proj + res_start + i * N + j] = val * alpha_res;
+            atomicAdd(&grad_bias[res_start + i * N + j], val);
             local_g_alpha_res += val * proj_output[base_proj + res_start + i * N + j];
         }
     }
@@ -279,14 +281,14 @@ void launch_rms_bwd(const float* dout, const float* x, const float* rstd, const 
     rms_norm_bwd_kernel<<<total, threads, smem, stream>>>(dout, x, rstd, w, dx, total, dim);
 }
 
-void launch_fused_act_fwd(const float* proj, float a_pre, float a_post, float a_res, int iters, float* h_pre, float* h_post, float* h_res, int total, cudaStream_t stream) {
+void launch_fused_act_fwd(const float* proj, const float* bias, float a_pre, float a_post, float a_res, int iters, float* h_pre, float* h_post, float* h_res, int total, cudaStream_t stream) {
     int threads = 256;
     int blocks = (total + threads - 1) / threads;
-    fused_act_sinkhorn_fwd_kernel<<<blocks, threads, 0, stream>>>(proj, a_pre, a_post, a_res, iters, h_pre, h_post, h_res, total);
+    fused_act_sinkhorn_fwd_kernel<<<blocks, threads, 0, stream>>>(proj, bias, a_pre, a_post, a_res, iters, h_pre, h_post, h_res, total);
 }
 
-void launch_fused_act_bwd(const float* gh_pre, const float* gh_post, const float* gh_res, const float* proj, const float* h_pre, const float* h_post, float a_pre, float a_post, float a_res, int iters, float* g_proj, float* ga_pre, float* ga_post, float* ga_res, int total, cudaStream_t stream) {
+void launch_fused_act_bwd(const float* gh_pre, const float* gh_post, const float* gh_res, const float* proj, const float* bias, const float* h_pre, const float* h_post, float a_pre, float a_post, float a_res, int iters, float* g_proj, float* g_bias, float* ga_pre, float* ga_post, float* ga_res, int total, cudaStream_t stream) {
     int threads = 256;
     int blocks = (total + threads - 1) / threads;
-    fused_act_sinkhorn_bwd_kernel<<<blocks, threads, 0, stream>>>(gh_pre, gh_post, gh_res, proj, h_pre, h_post, a_pre, a_post, a_res, iters, g_proj, ga_pre, ga_post, ga_res, total);
+    fused_act_sinkhorn_bwd_kernel<<<blocks, threads, 0, stream>>>(gh_pre, gh_post, gh_res, proj, bias, h_pre, h_post, a_pre, a_post, a_res, iters, g_proj, g_bias, ga_pre, ga_post, ga_res, total);
 }

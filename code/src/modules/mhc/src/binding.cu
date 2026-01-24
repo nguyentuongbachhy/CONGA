@@ -6,8 +6,8 @@
 
 void launch_rms_fwd(const float* x, const float* w, float* xn, float* rstd, float eps, int total, int dim, cudaStream_t stream);
 void launch_rms_bwd(const float* dout, const float* x, const float* rstd, const float* w, float* dx, int total, int dim, cudaStream_t stream);
-void launch_fused_act_fwd(const float* proj, float a_pre, float a_post, float a_res, int iters, float* h_pre, float* h_post, float* h_res, int total, cudaStream_t stream);
-void launch_fused_act_bwd(const float* gh_pre, const float* gh_post, const float* gh_res, const float* proj, const float* h_pre, const float* h_post, float a_pre, float a_post, float a_res, int iters, float* g_proj, float* ga_pre, float* ga_post, float* ga_res, int total, cudaStream_t stream);
+void launch_fused_act_fwd(const float* proj, const float* bias, float a_pre, float a_post, float a_res, int iters, float* h_pre, float* h_post, float* h_res, int total, cudaStream_t stream);
+void launch_fused_act_bwd(const float* gh_pre, const float* gh_post, const float* gh_res, const float* proj, const float* bias, const float* h_pre, const float* h_post, float a_pre, float a_post, float a_res, int iters, float* g_proj, float* g_bias, float* ga_pre, float* ga_post, float* ga_res, int total, cudaStream_t stream);
 
 std::vector<torch::Tensor> mhc_fused_forward(
     torch::Tensor x_streams,
@@ -53,14 +53,15 @@ std::vector<torch::Tensor> mhc_fused_forward(
         rms_eps, total_tokens, input_dim, stream
     );
 
-    auto proj_output = at::linear(x_norm, weight_f, bias_f);
+    auto proj_output = at::matmul(x_norm, weight_f.t());
 
     auto H_pre = torch::empty({B, L, N}, opts);
     auto H_post = torch::empty({B, L, N}, opts);
     auto H_res = torch::empty({B, L, N, N}, opts);
 
     launch_fused_act_fwd(
-        proj_output.data_ptr<float>(), 
+        proj_output.data_ptr<float>(),
+        bias_f.data_ptr<float>(),
         alpha_pre, alpha_post, alpha_res, n_iters,
         H_pre.data_ptr<float>(), H_post.data_ptr<float>(), H_res.data_ptr<float>(),
         total_tokens, stream
@@ -82,6 +83,7 @@ std::vector<torch::Tensor> mhc_fused_backward(
     torch::Tensor x_norm,
     torch::Tensor x_streams,
     torch::Tensor proj_weight,
+    torch::Tensor proj_bias,
     torch::Tensor rms_weight,
     torch::Tensor H_pre,
     torch::Tensor H_post,
@@ -102,14 +104,16 @@ std::vector<torch::Tensor> mhc_fused_backward(
     int C = x_streams.size(3);
     int input_dim = n * C;
     int total_tokens = B * L;
+    int out_dim = 4 + 4 + 16;
 
     auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(x_streams.device());
     auto grad_proj_output = torch::empty_like(proj_output);
+    auto grad_proj_bias = torch::zeros({out_dim}, opts);
     auto grad_alpha_pre = torch::zeros({1}, opts);
     auto grad_alpha_post = torch::zeros({1}, opts);
     auto grad_alpha_res = torch::zeros({1}, opts);
 
-    torch::Tensor g_H_pre, g_H_post, g_H_res, H_pre_f, H_post_f, x_flat, weight_f, rms_w_f;
+    torch::Tensor g_H_pre, g_H_post, g_H_res, H_pre_f, H_post_f, x_flat, weight_f, bias_f, rms_w_f;
     
     if (orig_dtype == torch::kFloat32) {
         g_H_pre = grad_H_pre.view({-1, 4}).contiguous();
@@ -119,6 +123,7 @@ std::vector<torch::Tensor> mhc_fused_backward(
         H_post_f = H_post.view({-1, 4}).contiguous();
         x_flat = x_streams.view({-1, input_dim}).contiguous();
         weight_f = proj_weight.contiguous();
+        bias_f = proj_bias.contiguous();
         rms_w_f = rms_weight.contiguous();
     } else {
         g_H_pre = grad_H_pre.to(torch::kFloat32).view({-1, 4}).contiguous();
@@ -128,6 +133,7 @@ std::vector<torch::Tensor> mhc_fused_backward(
         H_post_f = H_post.to(torch::kFloat32).view({-1, 4}).contiguous();
         x_flat = x_streams.to(torch::kFloat32).view({-1, input_dim}).contiguous();
         weight_f = proj_weight.to(torch::kFloat32).contiguous();
+        bias_f = proj_bias.to(torch::kFloat32).contiguous();
         rms_w_f = rms_weight.to(torch::kFloat32).contiguous();
     }
 
@@ -136,10 +142,12 @@ std::vector<torch::Tensor> mhc_fused_backward(
         g_H_post.data_ptr<float>(),
         g_H_res.data_ptr<float>(),
         proj_output.data_ptr<float>(),
+        bias_f.data_ptr<float>(),
         H_pre_f.data_ptr<float>(),
         H_post_f.data_ptr<float>(),
         alpha_pre, alpha_post, alpha_res, n_iters,
         grad_proj_output.data_ptr<float>(),
+        grad_proj_bias.data_ptr<float>(),
         grad_alpha_pre.data_ptr<float>(),
         grad_alpha_post.data_ptr<float>(),
         grad_alpha_res.data_ptr<float>(),
@@ -148,11 +156,10 @@ std::vector<torch::Tensor> mhc_fused_backward(
 
     auto x_norm_flat = x_norm.view({-1, input_dim});
     auto grad_proj_weight = at::matmul(grad_proj_output.t(), x_norm_flat);
-    auto grad_proj_bias = grad_proj_output.sum(0);
     auto grad_x_norm = at::matmul(grad_proj_output, weight_f);
 
     auto grad_x = torch::empty_like(x_flat);
-    auto grad_rms_weight = (grad_x_norm * x_flat * rstd.unsqueeze(1)).sum(0);
+    auto grad_rms_weight = (grad_x_norm * x_norm_flat).sum(0);
     
     launch_rms_bwd(
         grad_x_norm.data_ptr<float>(),

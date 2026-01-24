@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Tuple, Any, Optional, cast
-
 import mhc_cuda
-
 
 class MHCFusedFunction(torch.autograd.Function):
     @staticmethod
@@ -31,7 +29,7 @@ class MHCFusedFunction(torch.autograd.Function):
             n_iters
         )
         ctx.save_for_backward(
-            x_streams, x_norm, proj_weight, rms_weight, 
+            x_streams, x_norm, proj_weight, proj_bias, rms_weight, 
             H_pre, H_post, proj_output, rstd,
             alpha_pre, alpha_post, alpha_res
         )
@@ -40,8 +38,8 @@ class MHCFusedFunction(torch.autograd.Function):
         return H_pre, H_post, H_res
 
     @staticmethod
-    def backward(ctx: Any, grad_H_pre: torch.Tensor, grad_H_post: torch.Tensor, grad_H_res: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]: # type: ignore
-        (x_streams, x_norm, proj_weight, rms_weight, 
+    def backward(ctx: Any, grad_H_pre: torch.Tensor, grad_H_post: torch.Tensor, grad_H_res: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]: # type: ignore[override]
+        (x_streams, x_norm, proj_weight, proj_bias, rms_weight, 
          H_pre, H_post, proj_output, rstd,
          alpha_pre, alpha_post, alpha_res) = ctx.saved_tensors
         
@@ -52,6 +50,7 @@ class MHCFusedFunction(torch.autograd.Function):
             x_norm.contiguous(),
             x_streams.contiguous(),
             proj_weight.contiguous(),
+            proj_bias.contiguous(),
             rms_weight.contiguous(),
             H_pre.contiguous(),
             H_post.contiguous(),
@@ -78,10 +77,10 @@ class MHCFusedFunction(torch.autograd.Function):
             None
         )
 
-
 class MHCLayer(nn.Module):
-    def __init__(self, hidden_units: int, num_streams: int = 4, init_scale: float = 0.01, n_iters: int = 3):
+    def __init__(self, hidden_units: int, num_streams: int = 4, init_scale: float = 0.01, n_iters: int = 20):
         super().__init__()
+        assert num_streams == 4, "MHC currently only supports 4 streams due to kernel constraints"
         self.C = hidden_units
         self.n = num_streams
         self.n_iters = n_iters
@@ -97,8 +96,6 @@ class MHCLayer(nn.Module):
         self.rms_eps = 1e-6
 
     def forward(self, x_streams: torch.Tensor, layer_fn: nn.Module) -> torch.Tensor:
-        B, L, n, C = x_streams.shape
-        
         result = cast(
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
             MHCFusedFunction.apply(
