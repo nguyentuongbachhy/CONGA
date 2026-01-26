@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import torch
 import argparse
@@ -50,7 +50,7 @@ def train_with_patterns(args) -> None:
     pattern_regularizer = None
     
     if args.pattern_file and os.path.exists(args.pattern_file):
-        print(f"\n🎯 Loading pattern-based components...")
+        print(f"\n≡ƒÄ» Loading pattern-based components...")
         
         if args.use_pattern_init:
             pattern_initializer = PatternAwareInitializer(args.pattern_file)
@@ -201,7 +201,7 @@ def train_with_patterns(args) -> None:
                 folder = log_dir
                 fname = f'SASRec.best.pth'
                 torch.save(model.state_dict(), os.path.join(folder, fname))
-                print(f'         ✓ Saved best model')
+                print(f'         Γ£ô Saved best model')
             
             f.write(f'{epoch} {t_valid} {t_test}\n')
             f.flush()

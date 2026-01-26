@@ -119,3 +119,5 @@ benchmark/
 # !/.gitignore
 # !/README.md
 # !/requirements.txt
+
+pattern_mining/

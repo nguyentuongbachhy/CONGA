@@ -1,4 +1,4 @@
-import os
+﻿import os
 import argparse
 import time
 from typing import Dict, List
@@ -211,7 +211,7 @@ def main() -> None:
 
                 fname = f"lightgcn_teacher.dim={args.embedding_dim}.layers={args.num_layers}.pth"
                 torch.save(model.state_dict(), os.path.join(args.output_dir, fname))
-                print(f"         ✓ Best model saved: {fname}")
+                print(f"         Γ£ô Best model saved: {fname}")
                 print(f"         Best so far - Valid NDCG: {best_val_ndcg:.4f}, Test NDCG: {best_test_ndcg:.4f}")
             print()
             t0 = time.time()

@@ -3,7 +3,10 @@ import time
 import torch
 import argparse
 import torch.nn.functional as F
+import multiprocessing
 from tqdm import tqdm
+
+multiprocessing.set_start_method('spawn', force=True)
 from models.model import SASRec
 from models.continuum_memory import ContinuumItemEmbedding
 from utils import check_and_convert_dataset, load_metadata, get_dataloader, data_partition, evaluate, evaluate_valid
@@ -30,12 +33,33 @@ parser.add_argument("--state_dict_path", default=None, type=str)
 parser.add_argument("--norm_first", action="store_true", default=False)
 parser.add_argument("--num_workers", default=4, type=int)
 parser.add_argument("--use_nested_learning", default=False, action="store_true")
-parser.add_argument("--cms_fast_weight", default=0.5, type=float)
-parser.add_argument("--cms_medium_weight", default=0.3, type=float)
-parser.add_argument("--cms_slow_weight", default=0.2, type=float)
+parser.add_argument("--cms_fast_weight", default=0.9, type=float)
+parser.add_argument("--cms_medium_weight", default=0.05, type=float)
+parser.add_argument("--cms_slow_weight", default=0.05, type=float)
+parser.add_argument(
+    "--use_stem",
+    default=False,
+    action="store_true",
+    help="Enable STEM (arXiv:2601.10639) - replaces FFN up-projection with token-indexed embeddings",
+)
+parser.add_argument(
+    "--stem_layers",
+    default=None,
+    type=str,
+    help="Comma-separated layer indices for STEM (e.g., '0,2,4'). Default: every other layer (0,2,4...)",
+)
+parser.add_argument(
+    "--stem_cpu_offload",
+    default=False,
+    action="store_true",
+    help="Offload STEM embeddings to CPU with async prefetch (saves VRAM)",
+)
 
 args = parser.parse_args()
 
+# Parse stem_layers from comma-separated string to list
+if args.stem_layers is not None:
+    args.stem_layers = [int(x.strip()) for x in args.stem_layers.split(',')]
 
 if __name__ == "__main__":
     os.makedirs(args.dataset + "_" + args.train_dir, exist_ok=True)
@@ -71,6 +95,21 @@ if __name__ == "__main__":
             pass
     model.item_emb.weight.data[0, :] = 0
     
+    # STEM Configuration Logging
+    if args.use_stem:
+        stem_layers = sorted(list(model.stem_layers))
+        total_params = sum(p.numel() for p in model.parameters())
+        stem_ratio = len(stem_layers) / args.num_blocks * 100
+        print(f"\n{'='*60}")
+        print(f"STEM Architecture (arXiv:2601.10639)")
+        print(f"{'='*60}")
+        print(f"STEM Layers: {stem_layers} ({stem_ratio:.0f}% of {args.num_blocks} blocks)")
+        print(f"CPU Offload: {'Enabled' if args.stem_cpu_offload else 'Disabled'}")
+        print(f"Total Params: {total_params:,}")
+        print(f"Key: UP-projection replaced, GATE kept dense (context-aware)")
+        print(f"Paper: +9-10% knowledge tasks, stable training (no loss spikes)")
+        print(f"{'='*60}\n")
+    
     if args.use_nested_learning:
         print("Applying CMS...")
         original_emb: torch.nn.Embedding = getattr(model, "item_emb")
@@ -91,7 +130,7 @@ if __name__ == "__main__":
             cms_emb.slow_emb.weight.copy_(original_emb.weight)
         
         setattr(model, "item_emb", cms_emb)
-        print("✓ CMS applied")
+        print(f"✓ CMS applied | Weights: fast={args.cms_fast_weight}, med={args.cms_medium_weight}, slow={args.cms_slow_weight}")
     
     epoch_start_idx = 1
     if args.state_dict_path:

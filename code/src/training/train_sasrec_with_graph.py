@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import argparse
 import torch
@@ -170,7 +170,7 @@ if __name__ == '__main__':
                 cms_emb.slow_emb.weight.copy_(original_emb.weight)
         
         setattr(model, 'item_emb', cms_emb)
-        print("  ✓ CMS applied")
+        print("  Γ£ô CMS applied")
     
     epoch_start_idx = 1
     if args.state_dict_path:
@@ -285,7 +285,7 @@ if __name__ == '__main__':
                 best_val_ndcg, best_val_hr = t_valid
                 best_test_ndcg, best_test_hr = t_test
                 torch.save(model.state_dict(), os.path.join(args.dataset + '_' + args.train_dir, 'SASRec.best.pth'))
-                print('         ✓ Saved best model')
+                print('         Γ£ô Saved best model')
             
             f.write(f'{epoch} {t_valid} {t_test}\n')
             f.flush()

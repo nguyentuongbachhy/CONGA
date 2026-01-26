@@ -15,19 +15,7 @@ class SASRec(torch.nn.Module):
         
         self.num_streams: int = getattr(args, 'num_streams', 4)
         self.use_stem: bool = getattr(args, 'use_stem', False)
-        self.stem_cpu_offload: bool = getattr(args, 'stem_cpu_offload', False)
-        self.num_blocks: int = args.num_blocks
-        
-        # STEM layer selection (paper: uniform intervals, 1/3 of layers)
-        # For num_blocks=2: use layer 0 (50% STEM)
-        # For num_blocks=6: use layers 0, 2, 4 (50% STEM) or 0, 3 (33% STEM)
-        # For num_blocks=8: use layers 1, 3, 5, 7 (50% STEM) as in paper config
-        stem_layers_arg = getattr(args, 'stem_layers', None)
-        if stem_layers_arg is not None:
-            self.stem_layers = set(stem_layers_arg) if isinstance(stem_layers_arg, (list, tuple)) else set()
-        else:
-            # Default: every other layer starting from 0 (paper's uniform interval strategy)
-            self.stem_layers = set(range(0, args.num_blocks, 2)) if self.use_stem else set() 
+        self.stem_start_layer: int = getattr(args, 'stem_start_layer', args.num_blocks - 1) 
 
         self.item_emb: torch.nn.Embedding = torch.nn.Embedding(self.item_num+1, args.hidden_units, padding_idx=0)
         
@@ -57,17 +45,16 @@ class SASRec(torch.nn.Module):
 
             self.forward_layernorms.append(torch.nn.LayerNorm(args.hidden_units, eps=1e-8))
             
-            # STEM: Paper strategy - use at uniform intervals
-            # Key insight: Replace UP-projection only, keep GATE dense for context-awareness
-            if i in self.stem_layers:
+            # STEM: Use item-indexed embeddings for deeper layers
+            use_stem_this_layer = self.use_stem and (i >= self.stem_start_layer)
+            if use_stem_this_layer:
                 self.forward_layers.append(
                     STEMSwiGLU(
                         args.hidden_units, 
                         self.item_num + 1,
                         args.dropout_rate,
                         use_stem=True,
-                        padding_idx=0,
-                        cpu_offload=self.stem_cpu_offload
+                        padding_idx=0
                     )
                 )
             else:
@@ -88,35 +75,33 @@ class SASRec(torch.nn.Module):
         x_streams = seqs.unsqueeze(2).repeat(1, 1, self.num_streams, 1)
 
         for i in range(len(self.attention_layers)):
-            # Capture loop variable to avoid closure bug
-            layer_idx = i
             
-            def make_attn_wrapper(idx: int):
-                def attn_wrapper(x: torch.Tensor) -> torch.Tensor:
-                    if self.norm_first:
-                        x = self.attention_layernorms[idx](x)
-                    return self.attention_layers[idx](
-                        x, 
-                        attn_mask=None,
-                        rotary_emb_fn=self.rope
-                    )
-                return attn_wrapper
-            
-            x_streams = self.mhc_attn_layers[layer_idx](x_streams, make_attn_wrapper(layer_idx))
+            def attn_wrapper(x: torch.Tensor) -> torch.Tensor:
+                if self.norm_first:
+                    x = self.attention_layernorms[i](x)
 
-            # FFN wrapper - pass token_ids to STEM layers
-            def make_ffn_wrapper(idx: int, is_stem: bool):
+                return self.attention_layers[i](
+                    x, 
+                    attn_mask=None,
+                    rotary_emb_fn=self.rope
+                )
+            
+            x_streams = self.mhc_attn_layers[i](x_streams, attn_wrapper)
+
+            # FFN wrapper - pass item_ids if STEM layer
+            use_stem_this_layer = self.use_stem and (i >= self.stem_start_layer)
+            if use_stem_this_layer:
                 def ffn_wrapper(x: torch.Tensor) -> torch.Tensor:
                     if self.norm_first:
-                        x = self.forward_layernorms[idx](x)
-                    if is_stem:
-                        return self.forward_layers[idx](x, token_ids=item_ids)
-                    else:
-                        return self.forward_layers[idx](x)
-                return ffn_wrapper
-            
-            is_stem_layer = layer_idx in self.stem_layers
-            x_streams = self.mhc_ffn_layers[layer_idx](x_streams, make_ffn_wrapper(layer_idx, is_stem_layer))
+                        x = self.forward_layernorms[i](x)
+                    return self.forward_layers[i](x, item_ids)
+            else:
+                def ffn_wrapper(x: torch.Tensor) -> torch.Tensor:
+                    if self.norm_first:
+                        x = self.forward_layernorms[i](x)
+                    return self.forward_layers[i](x)
+
+            x_streams = self.mhc_ffn_layers[i](x_streams, ffn_wrapper)
 
         final_seqs = torch.mean(x_streams, dim=2)
 

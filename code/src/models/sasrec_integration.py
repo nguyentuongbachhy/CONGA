@@ -1,4 +1,4 @@
-import torch
+﻿import torch
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
@@ -54,7 +54,7 @@ def initialize_sasrec_with_graph_embeddings(
     else:
         print("Item embeddings initialized from graph")
     
-    print(f"✓ SASRec initialized with graph embeddings (scale={scale_factor})")
+    print(f"Γ£ô SASRec initialized with graph embeddings (scale={scale_factor})")
 
 
 def create_sasrec_with_graph_init(
