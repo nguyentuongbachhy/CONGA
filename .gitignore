@@ -121,3 +121,4 @@ benchmark/
 # !/requirements.txt
 
 pattern_mining/
+stem/
